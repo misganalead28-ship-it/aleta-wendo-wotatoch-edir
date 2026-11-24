@@ -1,0 +1,932 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Primitives & RBAC Helpers
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAuthenticatedMember() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    function isVerified() {
+      return isAuthenticatedMember() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isVerified() && request.auth.token.email == 'Misganalead28@gmail.com';
+    }
+
+    function memberDocExists(uid) {
+      return exists(/databases/$(database)/documents/members/$(uid));
+    }
+
+    function memberRole(uid) {
+      return get(/databases/$(database)/documents/members/$(uid)).data.role;
+    }
+
+    function memberStatus(uid) {
+      return get(/databases/$(database)/documents/members/$(uid)).data.status;
+    }
+
+    function isActiveMember() {
+      return isAdmin() || (isAuthenticatedMember() && memberDocExists(request.auth.uid) && memberStatus(request.auth.uid) == 'active');
+    }
+
+    function hasRole(allowedRoles) {
+      return isVerified()
+        && memberDocExists(request.auth.uid)
+        && memberStatus(request.auth.uid) == 'active'
+        && (memberRole(request.auth.uid) in allowedRoles);
+    }
+
+    function isOfficer() {
+      return isAdmin() || hasRole(['chairperson', 'secretary', 'treasurer', 'auditor', 'committee_member']);
+    }
+
+    function isFinanceOfficer() {
+      return isAdmin() || hasRole(['chairperson', 'treasurer']);
+    }
+
+    function isGovernanceOfficer() {
+      return isAdmin() || hasRole(['chairperson', 'secretary']);
+    }
+
+    function isValidOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isValidRequiredString(data, field, minLen, maxLen) {
+      return (field in data) && data[field] is string && data[field].size() >= minLen && data[field].size() <= maxLen;
+    }
+
+    function isNonNegativeNumber(val) {
+      return (val is int || val is float) && val >= 0;
+    }
+
+    function hasMatchingInvite(inviteKey, data) {
+      return isVerified()
+        && isValidId(inviteKey)
+        && exists(/databases/$(database)/documents/member_invites/$(inviteKey))
+        && get(/databases/$(database)/documents/member_invites/$(inviteKey)).data.email.lower() == request.auth.token.email.lower()
+        && get(/databases/$(database)/documents/member_invites/$(inviteKey)).data.claimed == false
+        && data.role == get(/databases/$(database)/documents/member_invites/$(inviteKey)).data.role
+        && data.status == get(/databases/$(database)/documents/member_invites/$(inviteKey)).data.status
+        && data.memberCode == get(/databases/$(database)/documents/member_invites/$(inviteKey)).data.memberCode;
+    }
+
+    // =========================================================================
+    // Entity Validation Blueprints
+    // =========================================================================
+    function isValidMemberProfile(data) {
+      return data.keys().hasAll([
+        'uid', 'memberCode', 'fullName', 'email', 'phone', 'address',
+        'joinDate', 'status', 'role', 'monthlyDuesRate', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'uid', 'memberCode', 'fullName', 'fullNameAm', 'email', 'phone', 'address',
+        'photoUrl', 'joinDate', 'status', 'role', 'guarantorName',
+        'guarantorMemberCode', 'guarantorPhone', 'monthlyDuesRate', 'inviteId',
+        'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.uid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && data.memberCode.matches('^[A-Z0-9\\-]+$')
+      && isValidRequiredString(data, 'fullName', 2, 100)
+      && isValidOptionalString(data, 'fullNameAm', 100)
+      && isValidRequiredString(data, 'email', 3, 120)
+      && isValidRequiredString(data, 'phone', 5, 30)
+      && isValidRequiredString(data, 'address', 2, 200)
+      && isValidOptionalString(data, 'photoUrl', 350000)
+      && isValidRequiredString(data, 'joinDate', 4, 32)
+      && data.status in ['pending', 'active', 'suspended', 'terminated']
+      && data.role in ['chairperson', 'secretary', 'treasurer', 'auditor', 'committee_member', 'member']
+      && isValidOptionalString(data, 'guarantorName', 100)
+      && isValidOptionalString(data, 'guarantorMemberCode', 32)
+      && isValidOptionalString(data, 'guarantorPhone', 30)
+      && isNonNegativeNumber(data.monthlyDuesRate)
+      && isValidOptionalString(data, 'inviteId', 128)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidMemberPublic(data) {
+      return data.keys().hasAll([
+        'uid', 'memberCode', 'fullName', 'role', 'status', 'joinDate', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'uid', 'memberCode', 'fullName', 'fullNameAm', 'role', 'status',
+        'photoUrl', 'joinDate', 'visibility', 'inviteId', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.uid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && data.memberCode.matches('^[A-Z0-9\\-]+$')
+      && isValidRequiredString(data, 'fullName', 2, 100)
+      && isValidOptionalString(data, 'fullNameAm', 100)
+      && data.role in ['chairperson', 'secretary', 'treasurer', 'auditor', 'committee_member', 'member']
+      && data.status in ['pending', 'active', 'suspended', 'terminated']
+      && isValidOptionalString(data, 'photoUrl', 350000)
+      && isValidRequiredString(data, 'joinDate', 4, 32)
+      && data.visibility == 'members'
+      && isValidOptionalString(data, 'inviteId', 128)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidMemberInvite(data) {
+      return data.keys().hasAll([
+        'email', 'memberCode', 'fullName', 'phone', 'address',
+        'joinDate', 'status', 'role', 'monthlyDuesRate', 'invitedByUid',
+        'claimed', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'email', 'memberCode', 'fullName', 'fullNameAm', 'phone', 'address',
+        'photoUrl', 'joinDate', 'status', 'role', 'guarantorName',
+        'guarantorMemberCode', 'guarantorPhone', 'monthlyDuesRate', 'invitedByUid',
+        'claimed', 'claimedByUid', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'email', 3, 120)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && data.memberCode.matches('^[A-Z0-9\\-]+$')
+      && isValidRequiredString(data, 'fullName', 2, 100)
+      && isValidOptionalString(data, 'fullNameAm', 100)
+      && isValidRequiredString(data, 'phone', 5, 30)
+      && isValidRequiredString(data, 'address', 2, 200)
+      && isValidOptionalString(data, 'photoUrl', 350000)
+      && isValidRequiredString(data, 'joinDate', 4, 32)
+      && data.status in ['pending', 'active', 'suspended', 'terminated']
+      && data.role in ['chairperson', 'secretary', 'treasurer', 'auditor', 'committee_member', 'member']
+      && isValidOptionalString(data, 'guarantorName', 100)
+      && isValidOptionalString(data, 'guarantorMemberCode', 32)
+      && isValidOptionalString(data, 'guarantorPhone', 30)
+      && isNonNegativeNumber(data.monthlyDuesRate)
+      && isValidId(data.invitedByUid)
+      && data.claimed is bool
+      && isValidOptionalString(data, 'claimedByUid', 128)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidDependent(data) {
+      return data.keys().hasAll([
+        'memberId', 'uid', 'fullName', 'relationship', 'age', 'covered', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'memberId', 'uid', 'fullName', 'relationship', 'age', 'idNumber', 'covered', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.memberId)
+      && isValidId(data.uid)
+      && isValidRequiredString(data, 'fullName', 2, 100)
+      && data.relationship in ['spouse', 'child', 'parent', 'sibling', 'other']
+      && (data.age is int || data.age is float) && data.age >= 0 && data.age <= 120
+      && isValidOptionalString(data, 'idNumber', 50)
+      && data.covered is bool
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidContribution(data) {
+      return data.keys().hasAll([
+        'memberUid', 'memberCode', 'memberName', 'type', 'periodLabel',
+        'amount', 'penaltyAmount', 'totalAmount', 'paymentMethod', 'transactionRef',
+        'status', 'reconciled', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'memberUid', 'memberCode', 'memberName', 'type', 'periodLabel',
+        'amount', 'penaltyAmount', 'totalAmount', 'paymentMethod', 'transactionRef',
+        'receiptImageUrl', 'notes', 'status', 'reviewedByUid', 'reviewedByName',
+        'rejectionReason', 'reconciled', 'bankStatementRef', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.memberUid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && isValidRequiredString(data, 'memberName', 2, 100)
+      && data.type in ['monthly', 'bereavement', 'penalty', 'registration']
+      && isValidRequiredString(data, 'periodLabel', 2, 64)
+      && isNonNegativeNumber(data.amount)
+      && isNonNegativeNumber(data.penaltyAmount)
+      && isNonNegativeNumber(data.totalAmount)
+      && data.paymentMethod in ['telebirr', 'bank_transfer', 'cash']
+      && isValidRequiredString(data, 'transactionRef', 2, 80)
+      && isValidOptionalString(data, 'receiptImageUrl', 450000)
+      && isValidOptionalString(data, 'notes', 500)
+      && data.status in ['pending', 'approved', 'rejected']
+      && isValidOptionalString(data, 'reviewedByUid', 128)
+      && isValidOptionalString(data, 'reviewedByName', 100)
+      && isValidOptionalString(data, 'rejectionReason', 300)
+      && data.reconciled is bool
+      && isValidOptionalString(data, 'bankStatementRef', 80)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidBenefitClaim(data) {
+      return data.keys().hasAll([
+        'memberUid', 'memberCode', 'memberName', 'category', 'title',
+        'description', 'beneficiaryName', 'requestedAmount', 'approvedAmount',
+        'status', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'memberUid', 'memberCode', 'memberName', 'category', 'title',
+        'description', 'beneficiaryName', 'requestedAmount', 'approvedAmount',
+        'supportingDocUrl', 'status', 'reviewedByUid', 'reviewedByName',
+        'reviewNotes', 'disbursedRef', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.memberUid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && isValidRequiredString(data, 'memberName', 2, 100)
+      && data.category in ['bereavement', 'wedding', 'medical', 'emergency']
+      && isValidRequiredString(data, 'title', 3, 150)
+      && isValidRequiredString(data, 'description', 5, 1000)
+      && isValidRequiredString(data, 'beneficiaryName', 2, 100)
+      && isNonNegativeNumber(data.requestedAmount)
+      && isNonNegativeNumber(data.approvedAmount)
+      && isValidOptionalString(data, 'supportingDocUrl', 450000)
+      && data.status in ['submitted', 'under_review', 'approved', 'disbursed', 'rejected']
+      && isValidOptionalString(data, 'reviewedByUid', 128)
+      && isValidOptionalString(data, 'reviewedByName', 100)
+      && isValidOptionalString(data, 'reviewNotes', 500)
+      && isValidOptionalString(data, 'disbursedRef', 80)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidAsset(data) {
+      return data.keys().hasAll([
+        'assetCode', 'name', 'category', 'totalQuantity', 'availableQuantity',
+        'condition', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'assetCode', 'name', 'nameAm', 'category', 'totalQuantity', 'availableQuantity',
+        'condition', 'borrowedByMemberCode', 'borrowedByName', 'dueDate',
+        'visibility', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'assetCode', 2, 32)
+      && isValidRequiredString(data, 'name', 2, 100)
+      && isValidOptionalString(data, 'nameAm', 100)
+      && data.category in ['tent', 'chairs', 'cookware', 'electronics', 'other']
+      && isNonNegativeNumber(data.totalQuantity)
+      && isNonNegativeNumber(data.availableQuantity)
+      && data.availableQuantity <= data.totalQuantity
+      && data.condition in ['good', 'fair', 'needs_repair']
+      && isValidOptionalString(data, 'borrowedByMemberCode', 32)
+      && isValidOptionalString(data, 'borrowedByName', 100)
+      && isValidOptionalString(data, 'dueDate', 32)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidLedgerEntry(data) {
+      return data.keys().hasAll([
+        'entryType', 'category', 'description', 'amount', 'paymentMethod',
+        'reconciled', 'recordedByUid', 'recordedByName', 'entryDate',
+        'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'entryType', 'category', 'description', 'amount', 'paymentMethod',
+        'referenceCode', 'reconciled', 'bankStatementRef', 'recordedByUid',
+        'recordedByName', 'entryDate', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.entryType in ['income', 'expense']
+      && isValidRequiredString(data, 'category', 2, 64)
+      && isValidRequiredString(data, 'description', 3, 300)
+      && isNonNegativeNumber(data.amount)
+      && data.paymentMethod in ['telebirr', 'bank_transfer', 'cash']
+      && isValidOptionalString(data, 'referenceCode', 80)
+      && data.reconciled is bool
+      && isValidOptionalString(data, 'bankStatementRef', 80)
+      && isValidId(data.recordedByUid)
+      && isValidRequiredString(data, 'recordedByName', 2, 100)
+      && isValidRequiredString(data, 'entryDate', 4, 32)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll([
+        'title', 'message', 'priority', 'channel', 'authorUid', 'authorName',
+        'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'title', 'titleAm', 'message', 'messageAm', 'priority', 'channel',
+        'authorUid', 'authorName', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'title', 2, 150)
+      && isValidOptionalString(data, 'titleAm', 150)
+      && isValidRequiredString(data, 'message', 5, 2000)
+      && isValidOptionalString(data, 'messageAm', 2000)
+      && data.priority in ['urgent', 'reminder', 'general']
+      && data.channel in ['app_sms', 'in_app']
+      && isValidId(data.authorUid)
+      && isValidRequiredString(data, 'authorName', 2, 100)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidMeeting(data) {
+      return data.keys().hasAll([
+        'title', 'meetingType', 'scheduledDate', 'scheduledTime', 'location',
+        'agenda', 'status', 'createdByUid', 'createdByName', 'visibility',
+        'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'title', 'titleAm', 'meetingType', 'scheduledDate', 'scheduledTime', 'location',
+        'onlineLink', 'agenda', 'agendaAm', 'minutes', 'minutesAm', 'resolutions',
+        'status', 'createdByUid', 'createdByName', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'title', 3, 150)
+      && isValidOptionalString(data, 'titleAm', 150)
+      && data.meetingType in ['regular', 'emergency', 'general_assembly']
+      && isValidRequiredString(data, 'scheduledDate', 4, 32)
+      && isValidRequiredString(data, 'scheduledTime', 2, 32)
+      && isValidRequiredString(data, 'location', 2, 200)
+      && isValidOptionalString(data, 'onlineLink', 300)
+      && isValidRequiredString(data, 'agenda', 3, 2000)
+      && isValidOptionalString(data, 'agendaAm', 2000)
+      && isValidOptionalString(data, 'minutes', 8000)
+      && isValidOptionalString(data, 'minutesAm', 8000)
+      && isValidOptionalString(data, 'resolutions', 2000)
+      && data.status in ['scheduled', 'in_progress', 'completed']
+      && isValidId(data.createdByUid)
+      && isValidRequiredString(data, 'createdByName', 2, 100)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidMeetingAttendance(data) {
+      return data.keys().hasAll([
+        'meetingId', 'uid', 'memberCode', 'memberName', 'mode', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'meetingId', 'uid', 'memberCode', 'memberName', 'mode', 'note', 'visibility', 'createdAt', 'updatedAt'
+      ])
+      && isValidId(data.meetingId)
+      && isValidId(data.uid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && isValidRequiredString(data, 'memberName', 2, 100)
+      && data.mode in ['in_person', 'online', 'apology']
+      && isValidOptionalString(data, 'note', 250)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidBylawArticle(data) {
+      return data.keys().hasAll([
+        'articleNumber', 'title', 'content', 'category', 'visibility', 'updatedByUid', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'articleNumber', 'title', 'titleAm', 'content', 'contentAm', 'category',
+        'visibility', 'updatedByUid', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'articleNumber', 1, 20)
+      && isValidRequiredString(data, 'title', 2, 150)
+      && isValidOptionalString(data, 'titleAm', 150)
+      && isValidRequiredString(data, 'content', 5, 5000)
+      && isValidOptionalString(data, 'contentAm', 5000)
+      && isValidRequiredString(data, 'category', 2, 64)
+      && data.visibility == 'members'
+      && isValidId(data.updatedByUid)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidPoll(data) {
+      return data.keys().hasAll([
+        'title', 'description', 'options', 'status', 'closesAt', 'visibility', 'createdByUid', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'title', 'titleAm', 'description', 'descriptionAm', 'options', 'status',
+        'closesAt', 'visibility', 'createdByUid', 'createdAt', 'updatedAt'
+      ])
+      && isValidRequiredString(data, 'title', 3, 150)
+      && isValidOptionalString(data, 'titleAm', 150)
+      && isValidRequiredString(data, 'description', 3, 1000)
+      && isValidOptionalString(data, 'descriptionAm', 1000)
+      && data.options is list
+      && data.options.size() >= 2
+      && data.options.size() <= 6
+      && data.options[0] is string && data.options[0].size() >= 1 && data.options[0].size() <= 120
+      && data.options[1] is string && data.options[1].size() >= 1 && data.options[1].size() <= 120
+      && data.status in ['open', 'closed']
+      && isValidRequiredString(data, 'closesAt', 4, 32)
+      && data.visibility == 'members'
+      && isValidId(data.createdByUid)
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidPollVote(data) {
+      return data.keys().hasAll(['pollId', 'uid', 'memberCode', 'selectedOption', 'visibility', 'createdAt'])
+      && data.keys().hasOnly(['pollId', 'uid', 'memberCode', 'selectedOption', 'visibility', 'createdAt'])
+      && isValidId(data.pollId)
+      && isValidId(data.uid)
+      && isValidRequiredString(data, 'memberCode', 3, 32)
+      && isValidRequiredString(data, 'selectedOption', 1, 120)
+      && data.visibility == 'members'
+      && data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll([
+        'actorUid', 'actorName', 'actorRole', 'action', 'targetCollection', 'targetId', 'summary', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'actorUid', 'actorName', 'actorRole', 'action', 'targetCollection', 'targetId', 'summary', 'createdAt'
+      ])
+      && isValidId(data.actorUid)
+      && isValidRequiredString(data, 'actorName', 2, 100)
+      && data.actorRole in ['chairperson', 'secretary', 'treasurer', 'auditor', 'committee_member', 'member']
+      && isValidRequiredString(data, 'action', 2, 80)
+      && isValidRequiredString(data, 'targetCollection', 2, 64)
+      && isValidRequiredString(data, 'targetId', 1, 128)
+      && isValidRequiredString(data, 'summary', 3, 500)
+      && data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Rules
+    // =========================================================================
+
+    // 1. Private Member Profiles (PII Isolated)
+    match /members/{memberId} {
+      allow get: if isAuthenticatedMember() && isValidId(memberId) && (memberId == request.auth.uid || isOfficer());
+      allow list: if isAuthenticatedMember() && (resource.data.uid == request.auth.uid || isOfficer());
+
+      allow create: if isAuthenticatedMember() && isValidId(memberId) && isValidMemberProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            memberId == request.auth.uid
+            && incoming().uid == request.auth.uid
+            && (
+              (incoming().role == 'member' && incoming().status == 'pending')
+              || (('inviteId' in incoming()) && hasMatchingInvite(incoming().inviteId, incoming()))
+            )
+          )
+        );
+
+      allow update: if isAuthenticatedMember() && isValidId(memberId) && isValidMemberProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            hasRole(['chairperson', 'secretary'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'monthlyDuesRate', 'fullName', 'fullNameAm', 'photoUrl', 'updatedAt'])
+          )
+          || (
+            memberId == request.auth.uid
+            && incoming().role == existing().role
+            && incoming().status == existing().status
+            && incoming().monthlyDuesRate == existing().monthlyDuesRate
+            && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'fullNameAm', 'phone', 'address', 'photoUrl', 'guarantorName', 'guarantorMemberCode', 'guarantorPhone', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(memberId);
+
+      // Family Dependents & Beneficiaries Subcollection
+      match /dependents/{dependentId} {
+        allow get: if isAuthenticatedMember() && isValidId(memberId) && isValidId(dependentId) && (memberId == request.auth.uid || isOfficer());
+        allow list: if isAuthenticatedMember() && (resource.data.uid == request.auth.uid || isAdmin());
+
+        allow create: if isAuthenticatedMember() && isValidId(memberId) && isValidId(dependentId)
+          && isValidDependent(incoming())
+          && incoming().memberId == memberId
+          && incoming().uid == memberId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/members/$(memberId))
+          && (memberId == request.auth.uid || isAdmin());
+
+        allow update: if isAuthenticatedMember() && isValidId(memberId) && isValidId(dependentId)
+          && isValidDependent(incoming())
+          && incoming().memberId == existing().memberId
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin()
+            || (
+              memberId == request.auth.uid
+              && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'relationship', 'age', 'idNumber', 'covered', 'updatedAt'])
+            )
+          );
+
+        allow delete: if isAuthenticatedMember() && isValidId(memberId) && isValidId(dependentId) && (memberId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // 2. Public Non-PII Member Directory
+    match /members_public/{memberId} {
+      allow get: if isActiveMember() && isValidId(memberId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isAuthenticatedMember() && isValidId(memberId) && isValidMemberPublic(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            memberId == request.auth.uid
+            && incoming().uid == request.auth.uid
+            && (
+              (incoming().role == 'member' && incoming().status == 'pending')
+              || (('inviteId' in incoming()) && hasMatchingInvite(incoming().inviteId, incoming()))
+            )
+          )
+        );
+
+      allow update: if isAuthenticatedMember() && isValidId(memberId) && isValidMemberPublic(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            hasRole(['chairperson', 'secretary'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'fullName', 'fullNameAm', 'photoUrl', 'updatedAt'])
+          )
+          || (
+            memberId == request.auth.uid
+            && incoming().role == existing().role
+            && incoming().status == existing().status
+            && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'fullNameAm', 'photoUrl', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(memberId);
+    }
+
+    // 2b. Member Invites for Individual User Account Claiming
+    match /member_invites/{inviteId} {
+      allow get: if isVerified() && isValidId(inviteId) && (isOfficer() || existing().email.lower() == request.auth.token.email.lower());
+      allow list: if isVerified() && (resource.data.email.lower() == request.auth.token.email.lower() || isAdmin() || hasRole(['chairperson', 'secretary']));
+
+      allow create: if isVerified() && isValidId(inviteId) && isValidMemberInvite(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().claimed == false
+        && (isAdmin() || hasRole(['chairperson', 'secretary']));
+
+      allow update: if isVerified() && isValidId(inviteId) && isValidMemberInvite(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            hasRole(['chairperson', 'secretary'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'role', 'monthlyDuesRate', 'fullName', 'fullNameAm', 'phone', 'address', 'photoUrl', 'updatedAt'])
+          )
+          || (
+            existing().email.lower() == request.auth.token.email.lower()
+            && existing().claimed == false
+            && incoming().claimed == true
+            && incoming().claimedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['claimed', 'claimedByUid', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(inviteId);
+    }
+
+    // 3. Contributions, Receipts & Treasurer Authorizations
+    match /contributions/{contributionId} {
+      allow get: if isAuthenticatedMember() && isValidId(contributionId) && (existing().memberUid == request.auth.uid || isOfficer());
+      allow list: if isAuthenticatedMember() && (resource.data.memberUid == request.auth.uid || isOfficer());
+
+      allow create: if isAuthenticatedMember() && isValidId(contributionId) && isValidContribution(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isActiveMember()
+            && incoming().memberUid == request.auth.uid
+            && incoming().status == 'pending'
+            && incoming().reconciled == false
+          )
+        );
+
+      allow update: if isAuthenticatedMember() && isValidId(contributionId) && isValidContribution(incoming())
+        && incoming().memberUid == existing().memberUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().status == 'pending'
+            && isFinanceOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'reviewedByUid', 'reviewedByName', 'rejectionReason',
+              'reconciled', 'bankStatementRef', 'updatedAt'
+            ])
+            && incoming().reviewedByUid == request.auth.uid
+          )
+          || (
+            existing().status == 'approved'
+            && hasRole(['treasurer', 'auditor', 'chairperson'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['reconciled', 'bankStatementRef', 'updatedAt'])
+          )
+          || (
+            existing().status == 'pending'
+            && existing().memberUid == request.auth.uid
+            && incoming().status == 'pending'
+            && incoming().reconciled == false
+            && incoming().diff(existing()).affectedKeys().hasOnly(['transactionRef', 'receiptImageUrl', 'notes', 'paymentMethod', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(contributionId);
+    }
+
+    // 4. Benefit Claims & Committee Disbursements
+    match /claims/{claimId} {
+      allow get: if isAuthenticatedMember() && isValidId(claimId) && (existing().memberUid == request.auth.uid || isOfficer());
+      allow list: if isAuthenticatedMember() && (resource.data.memberUid == request.auth.uid || isOfficer());
+
+      allow create: if isAuthenticatedMember() && isValidId(claimId) && isValidBenefitClaim(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isActiveMember()
+            && incoming().memberUid == request.auth.uid
+            && incoming().status == 'submitted'
+            && incoming().approvedAmount == 0
+          )
+        );
+
+      allow update: if isAuthenticatedMember() && isValidId(claimId) && isValidBenefitClaim(incoming())
+        && incoming().memberUid == existing().memberUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            !(existing().status in ['disbursed', 'rejected'])
+            && isOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'approvedAmount', 'reviewedByUid', 'reviewedByName',
+              'reviewNotes', 'disbursedRef', 'updatedAt'
+            ])
+            && incoming().reviewedByUid == request.auth.uid
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(claimId);
+    }
+
+    // 5. Association Physical Assets
+    match /assets/{assetId} {
+      allow get: if isActiveMember() && isValidId(assetId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(assetId) && isValidAsset(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isOfficer();
+
+      allow update: if isVerified() && isValidId(assetId) && isValidAsset(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'availableQuantity', 'condition', 'borrowedByMemberCode',
+              'borrowedByName', 'dueDate', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(assetId);
+    }
+
+    // 6. Income & Expense Ledger
+    match /ledger/{entryId} {
+      allow get: if isActiveMember() && isValidId(entryId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(entryId) && isValidLedgerEntry(incoming())
+        && incoming().recordedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isFinanceOfficer();
+
+      allow update: if isVerified() && isValidId(entryId) && isValidLedgerEntry(incoming())
+        && incoming().recordedByUid == existing().recordedByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            hasRole(['treasurer', 'auditor', 'chairperson'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['reconciled', 'bankStatementRef', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(entryId);
+    }
+
+    // 7. Announcements & Urgent Alerts
+    match /announcements/{announcementId} {
+      allow get: if isActiveMember() && isValidId(announcementId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(announcementId) && isValidAnnouncement(incoming())
+        && incoming().authorUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isOfficer();
+
+      allow update: if isVerified() && isValidId(announcementId) && isValidAnnouncement(incoming())
+        && incoming().authorUid == existing().authorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isGovernanceOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'titleAm', 'message', 'messageAm', 'priority', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(announcementId);
+    }
+
+    // 8. Meetings, Calls & Minutes
+    match /meetings/{meetingId} {
+      allow get: if isActiveMember() && isValidId(meetingId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(meetingId) && isValidMeeting(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isGovernanceOfficer();
+
+      allow update: if isVerified() && isValidId(meetingId) && isValidMeeting(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isGovernanceOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['minutes', 'minutesAm', 'resolutions', 'status', 'onlineLink', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(meetingId);
+
+      // Meeting Attendance Subcollection
+      match /attendance/{attendeeUid} {
+        allow get: if isActiveMember() && isValidId(meetingId) && isValidId(attendeeUid);
+        allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+        allow create: if isActiveMember() && isValidId(meetingId) && isValidId(attendeeUid)
+          && isValidMeetingAttendance(incoming())
+          && attendeeUid == request.auth.uid
+          && incoming().uid == request.auth.uid
+          && incoming().meetingId == meetingId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/meetings/$(meetingId));
+
+        allow update: if isActiveMember() && isValidId(meetingId) && isValidId(attendeeUid)
+          && isValidMeetingAttendance(incoming())
+          && attendeeUid == request.auth.uid
+          && incoming().uid == existing().uid
+          && incoming().meetingId == existing().meetingId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'note', 'updatedAt']);
+
+        allow delete: if isAdmin() && isValidId(meetingId) && isValidId(attendeeUid);
+      }
+    }
+
+    // 9. Association Bylaws
+    match /bylaws/{articleId} {
+      allow get: if isActiveMember() && isValidId(articleId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(articleId) && isValidBylawArticle(incoming())
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isGovernanceOfficer();
+
+      allow update: if isVerified() && isValidId(articleId) && isValidBylawArticle(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isGovernanceOfficer()
+            && incoming().updatedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'titleAm', 'content', 'contentAm', 'category', 'updatedByUid', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(articleId);
+    }
+
+    // 10. Digital Polls & Elections
+    match /polls/{pollId} {
+      allow get: if isActiveMember() && isValidId(pollId);
+      allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+      allow create: if isVerified() && isValidId(pollId) && isValidPoll(incoming())
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isGovernanceOfficer();
+
+      allow update: if isVerified() && isValidId(pollId) && isValidPoll(incoming())
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().status == 'open'
+            && isGovernanceOfficer()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(pollId);
+
+      // One-Member-One-Vote Ballots Subcollection
+      match /votes/{voteUid} {
+        allow get: if isAuthenticatedMember() && isValidId(pollId) && isValidId(voteUid);
+        allow list: if isAuthenticatedMember() && resource.data.visibility == 'members';
+
+        allow create: if isAuthenticatedMember() && isValidId(pollId) && isValidId(voteUid)
+          && isValidPollVote(incoming())
+          && voteUid == request.auth.uid
+          && incoming().uid == request.auth.uid
+          && incoming().pollId == pollId
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/polls/$(pollId))
+          && get(/databases/$(database)/documents/polls/$(pollId)).data.status == 'open'
+          && incoming().selectedOption in get(/databases/$(database)/documents/polls/$(pollId)).data.options
+          && (
+            isAdmin()
+            || (memberDocExists(request.auth.uid) && memberStatus(request.auth.uid) == 'active')
+          );
+
+        allow update, delete: if false;
+      }
+    }
+
+    // 11. Immutable Audit Trail
+    match /audit_logs/{logId} {
+      allow get: if isVerified() && isValidId(logId) && (isAdmin() || hasRole(['chairperson', 'auditor']));
+      allow list: if isAdmin() || hasRole(['chairperson', 'auditor']);
+
+      allow create: if isAuthenticatedMember() && isValidId(logId) && isValidAuditLog(incoming())
+        && incoming().actorUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && (
+          isAdmin()
+          || (memberDocExists(request.auth.uid) && incoming().actorRole == memberRole(request.auth.uid))
+          || (!memberDocExists(request.auth.uid) && incoming().actorRole == 'member')
+        );
+
+      allow update, delete: if false;
+    }
+  }
+}

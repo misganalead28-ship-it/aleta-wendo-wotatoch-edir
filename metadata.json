@@ -1,0 +1,6 @@
+{
+  "name": "Aleta Wendo Youth Mutual Aid Association",
+  "description": "የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር — Digital Mutual Aid Association management for members, contributions, receipt authorization, benefit claims, meetings, bylaws, voting, and audit reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
