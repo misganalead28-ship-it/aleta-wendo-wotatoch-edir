@@ -71,6 +71,7 @@ import {
   upsertMemberByAdmin,
 } from './services/iddirStore';
 import {
+  firebaseConfigStatus,
   signInWithFirebaseGoogle,
   signOutFirebase,
   subscribeFirebaseAuth,
@@ -192,6 +193,8 @@ function MainApp() {
     return 'ከFirebase ጋር ማመሳሰል አልተቻለም። የአካባቢ መረጃ ተጠብቋል።';
   }
 
+  const isFirebaseVerified = Boolean(firebaseUser && firebaseUser.emailVerified);
+
   useEffect(() => {
     let mounted = true;
     iddirProvider
@@ -216,7 +219,7 @@ function MainApp() {
             if (mounted) setDb(syncedDb);
           })
           .catch(() => {
-            // Keep cached DB accessible if cloud email isn't authorized
+            // Keep active state accessible if cloud email isn't authorized
           });
       }
     });
@@ -226,6 +229,43 @@ function MainApp() {
       unsubscribeAuth();
     };
   }, []);
+
+  // Real-time Firestore onSnapshot sync while user is logged in AND Firebase Auth is verified.
+  // Automatically unsubscribes on logout, Firebase sign-out, or component unmount.
+  useEffect(() => {
+    if (!session || !isFirebaseVerified || !firebaseConfigStatus.isConfigured) {
+      return undefined;
+    }
+
+    const unsubscribeRealtime = iddirProvider.subscribeRealtime(
+      (liveDb) => {
+        setDb(liveDb);
+      },
+      (err) => {
+        const raw = err instanceof Error ? err.message : String(err);
+        const id = `tst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        let text = 'ከFirebase ጋር ቀጥታ ማመሳሰል አልተቻለም።';
+        if (raw.includes('Quota exceeded')) {
+          text =
+            'የFirebase Firestore ዕለታዊ የነጻ መጠን (Quota) ገደብ ተሞልቷል። እባክዎ ነገ ይሞክሩ ወይም የክፍያ እቅዱን ያሻሽሉ።';
+        } else if (
+          raw.includes('PERMISSION_DENIED') ||
+          raw.includes('Missing or insufficient permissions')
+        ) {
+          text =
+            'የFirebase ደመና ፈቃድ አልተገኘም። እባክዎ በአድሚን ኢሜይል (Misganalead28@gmail.com) ይግቡ።';
+        }
+        setToasts((prev) => [...prev, { id, type: 'error', text }]);
+        setTimeout(() => {
+          setToasts((prev) => prev.filter((t) => t.id !== id));
+        }, 4500);
+      }
+    );
+
+    return () => {
+      unsubscribeRealtime();
+    };
+  }, [session?.userId, isFirebaseVerified]);
 
   function pushToast(type: ToastMessage['type'], text: string) {
     const id = `tst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
@@ -295,7 +335,13 @@ function MainApp() {
     setLoggingIn(true);
     setLoginError('');
     try {
-      const authSession = await authenticateUser(db, loginUsername, loginPassword);
+      const authDb = iddirProvider.isCloudConnected()
+        ? await iddirProvider.loadUsersAndMembersForLogin(db)
+        : db;
+      if (authDb !== db) {
+        setDb(authDb);
+      }
+      const authSession = await authenticateUser(authDb, loginUsername, loginPassword);
       setSession(authSession);
       setActiveTab('dashboard');
       setLoginPassword('');
@@ -432,16 +478,23 @@ function MainApp() {
           </form>
 
           {/* Small non-intrusive dev/setup hint */}
-          <p className="text-[11px] text-center text-[#6B7280] pt-2 border-t border-[#E5E7EB]">
-            የመጀመሪያ የአድሚን መግቢያ (ለሙከራ): የተጠቃሚ ስም{' '}
-            <span className="font-mono-tabular font-semibold text-[#374151]">
-              {INITIAL_ADMIN_USERNAME}
-            </span>{' '}
-            · የይለፍ ቃል{' '}
-            <span className="font-mono-tabular font-semibold text-[#374151]">
-              {INITIAL_ADMIN_PASSWORD}
-            </span>
-          </p>
+          <div className="pt-2 border-t border-[#E5E7EB] space-y-1.5 text-center">
+            <p className="text-[11px] text-[#6B7280]">
+              የመጀመሪያ የአድሚን መግቢያ (ለሙከራ): የተጠቃሚ ስም{' '}
+              <span className="font-mono-tabular font-semibold text-[#374151]">
+                {INITIAL_ADMIN_USERNAME}
+              </span>{' '}
+              · የይለፍ ቃል{' '}
+              <span className="font-mono-tabular font-semibold text-[#374151]">
+                {INITIAL_ADMIN_PASSWORD}
+              </span>
+            </p>
+            {!firebaseConfigStatus.isConfigured && (
+              <p className="text-[11px] text-[#92400E]">
+                የFirebase ቅንብር (.env) አልተሟላም፤ ሲስተሙ በጊዜያዊ የሙከራ ሁነታ እየሰራ ነው።
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -473,6 +526,25 @@ function MainApp() {
               <p className="text-[11px] font-medium text-[#14532D]">
                 {ROLE_LABELS_AM[session.role]}
               </p>
+            </div>
+
+            <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-[#4B5563] border border-[#E5E7EB] bg-[#F9FAFB] rounded-lg px-2.5 py-1.5">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isFirebaseVerified
+                    ? 'bg-[#16A34A]'
+                    : firebaseConfigStatus.isConfigured
+                      ? 'bg-[#D97706]'
+                      : 'bg-[#DC2626]'
+                }`}
+              />
+              <span>
+                {isFirebaseVerified
+                  ? 'Firestore ቀጥታ'
+                  : firebaseConfigStatus.isConfigured
+                    ? 'ደመና አልተገናኘም'
+                    : 'Firebase ቅንብር ይፈልጋል'}
+              </span>
             </div>
 
             {session.role === 'admin' &&

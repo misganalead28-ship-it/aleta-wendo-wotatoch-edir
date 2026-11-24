@@ -1,24 +1,59 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
   signOut,
+  type Auth,
   type User,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { doc, getDocFromServer, getFirestore, type Firestore } from 'firebase/firestore';
 import appletConfig from '../firebase-applet-config.json';
 
+const envApiKey = (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined)?.trim();
+const envAuthDomain = (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined)?.trim();
+const envProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined)?.trim();
+const envStorageBucket = (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined)?.trim();
+const envMessagingSenderId = (
+  import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined
+)?.trim();
+const envAppId = (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined)?.trim();
+const envDatabaseUrl = (import.meta.env.VITE_FIREBASE_DATABASE_URL as string | undefined)?.trim();
+const envFirestoreDatabaseId = (
+  import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID as string | undefined
+)?.trim();
+
 const firebaseConfig = {
-  ...appletConfig,
-  databaseURL: 'https://aleta-pt-default-rtdb.firebaseio.com',
+  apiKey: envApiKey || appletConfig.apiKey,
+  authDomain: envAuthDomain || appletConfig.authDomain,
+  databaseURL: envDatabaseUrl || 'https://aleta-pt-default-rtdb.firebaseio.com',
+  projectId: envProjectId || appletConfig.projectId,
+  storageBucket: envStorageBucket || appletConfig.storageBucket,
+  messagingSenderId: envMessagingSenderId || appletConfig.messagingSenderId,
+  appId: envAppId || appletConfig.appId,
+  firestoreDatabaseId: envFirestoreDatabaseId || appletConfig.firestoreDatabaseId,
 };
 
-const app = initializeApp(firebaseConfig);
+export const firebaseConfigStatus = {
+  hasExplicitEnvVars: Boolean(envApiKey && envProjectId && envAppId),
+  isConfigured: Boolean(
+    firebaseConfig.apiKey &&
+      firebaseConfig.projectId &&
+      firebaseConfig.appId &&
+      !firebaseConfig.projectId.includes('remixed')
+  ),
+  projectId: firebaseConfig.projectId,
+  databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+};
 
-export const db = getFirestore(app, appletConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+const app: FirebaseApp = initializeApp(firebaseConfig);
+
+export const db: Firestore = firebaseConfig.firestoreDatabaseId
+  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(app);
+
+export const auth: Auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
@@ -88,6 +123,7 @@ export function handleFirestoreError(
 }
 
 async function testConnection(): Promise<void> {
+  if (!firebaseConfigStatus.isConfigured) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {

@@ -92,18 +92,21 @@ service cloud.firestore {
         'joinDate', 'status', 'monthlyDuesRate', 'dependents', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'memberCode', 'fullName', 'phone', 'subCity', 'kebele',
-        'addressNote', 'joinDate', 'status', 'photoUrl', 'monthlyDuesRate',
-        'guarantorName', 'dependents', 'createdAt', 'updatedAt'
+        'id', 'memberCode', 'fullName', 'phone', 'address', 'kebeleOrSubcity',
+        'subCity', 'kebele', 'addressNote', 'familyInfo', 'joinDate', 'status',
+        'photoUrl', 'monthlyDuesRate', 'guarantorName', 'dependents', 'createdAt', 'updatedAt'
       ])
       && isValidId(data.id)
       && isValidRequiredString(data, 'memberCode', 3, 32)
       && data.memberCode.matches('^[A-Z0-9\\-]+$')
       && isValidRequiredString(data, 'fullName', 2, 100)
       && isValidRequiredString(data, 'phone', 5, 30)
+      && isValidOptionalString(data, 'address', 200)
+      && isValidOptionalString(data, 'kebeleOrSubcity', 140)
       && isValidRequiredString(data, 'subCity', 1, 80)
       && isValidRequiredString(data, 'kebele', 1, 60)
       && isValidOptionalString(data, 'addressNote', 200)
+      && isValidOptionalString(data, 'familyInfo', 600)
       && isValidRequiredString(data, 'joinDate', 4, 32)
       && data.status in ['active', 'suspended']
       && isValidOptionalString(data, 'photoUrl', 350000)
@@ -118,10 +121,12 @@ service cloud.firestore {
 
     function isValidUserAccount(data) {
       return data.keys().hasAll([
-        'id', 'username', 'passwordSalt', 'passwordHash', 'role', 'displayName', 'active', 'createdAt', 'updatedAt'
+        'id', 'username', 'passwordSalt', 'passwordHash', 'role', 'fullName', 'displayName',
+        'isActive', 'active', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'username', 'passwordSalt', 'passwordHash', 'role', 'memberId', 'displayName', 'active', 'createdAt', 'updatedAt'
+        'id', 'username', 'passwordSalt', 'passwordHash', 'role', 'memberId',
+        'fullName', 'displayName', 'isActive', 'active', 'createdAt', 'updatedAt'
       ])
       && isValidId(data.id)
       && isValidRequiredString(data, 'username', 3, 60)
@@ -130,77 +135,65 @@ service cloud.firestore {
       && isValidRequiredString(data, 'passwordHash', 8, 128)
       && isValidRole(data.role)
       && isValidOptionalString(data, 'memberId', 128)
+      && isValidRequiredString(data, 'fullName', 2, 100)
       && isValidRequiredString(data, 'displayName', 2, 100)
+      && data.isActive is bool
       && data.active is bool
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
 
-    function isValidContributionRecord(data) {
+    function isValidPaymentEntry(data) {
       return data.keys().hasAll([
-        'id', 'receiptNumber', 'memberId', 'memberCode', 'memberName', 'monthKey', 'periodLabel',
-        'type', 'amount', 'paymentMethod', 'referenceCode', 'authorizationStatus',
-        'recordedByUid', 'recordedByName', 'recordedAt', 'createdAt', 'updatedAt'
+        'id', 'paymentType', 'amount', 'paymentMethod', 'recordedBy', 'recordedByUid',
+        'recordedByName', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'receiptNumber', 'memberId', 'memberCode', 'memberName', 'monthKey', 'periodLabel',
-        'type', 'amount', 'paymentMethod', 'bankName', 'referenceCode', 'receiptImageUrl', 'notes',
-        'submittedByMember', 'authorizationStatus', 'authorizedByUid', 'authorizedByName',
-        'authorizedAt', 'rejectionReason', 'recordedByUid', 'recordedByName', 'recordedAt',
-        'createdAt', 'updatedAt'
+        'id', 'paymentType', 'receiptNumber', 'voucherNumber', 'memberId', 'memberCode',
+        'memberName', 'month', 'year', 'monthKey', 'periodLabel', 'type', 'category',
+        'title', 'description', 'beneficiaryName', 'amount', 'paymentMethod', 'bankName',
+        'referenceCode', 'referenceNote', 'receiptImageUrl', 'notes', 'submittedByMember',
+        'authorizationStatus', 'authorizedByUid', 'authorizedByName', 'authorizedAt',
+        'rejectionReason', 'approvalStatus', 'approvedByName', 'recordedBy', 'recordedByUid',
+        'recordedByName', 'recordedByRole', 'recordedAt', 'expenseDate', 'createdAt', 'updatedAt'
       ])
       && isValidId(data.id)
-      && isValidRequiredString(data, 'receiptNumber', 3, 40)
-      && isValidId(data.memberId)
-      && isValidRequiredString(data, 'memberCode', 3, 32)
-      && isValidRequiredString(data, 'memberName', 2, 100)
-      && isValidRequiredString(data, 'monthKey', 7, 10)
-      && isValidRequiredString(data, 'periodLabel', 2, 64)
-      && data.type in ['monthly', 'bereavement', 'penalty', 'registration']
-      && isPositiveNumber(data.amount)
-      && data.paymentMethod in ['telebirr', 'bank_transfer', 'cash']
-      && isValidOptionalString(data, 'bankName', 100)
-      && isValidRequiredString(data, 'referenceCode', 1, 80)
-      && isValidOptionalString(data, 'receiptImageUrl', 450000)
-      && isValidOptionalString(data, 'notes', 500)
-      && (!('submittedByMember' in data) || data.submittedByMember is bool)
-      && data.authorizationStatus in ['pending', 'authorized', 'rejected']
-      && isValidOptionalString(data, 'authorizedByUid', 128)
-      && isValidOptionalString(data, 'authorizedByName', 100)
-      && isValidOptionalString(data, 'authorizedAt', 64)
-      && isValidOptionalString(data, 'rejectionReason', 300)
-      && isValidRequiredString(data, 'recordedByUid', 1, 128)
-      && isValidRequiredString(data, 'recordedByName', 2, 100)
-      && isValidRequiredString(data, 'recordedAt', 4, 64)
-      && data.createdAt is timestamp
-      && data.updatedAt is timestamp;
-    }
-
-    function isValidExpenseRecord(data) {
-      return data.keys().hasAll([
-        'id', 'voucherNumber', 'category', 'title', 'description', 'amount',
-        'paymentMethod', 'approvalStatus', 'recordedByUid', 'recordedByName', 'expenseDate',
-        'createdAt', 'updatedAt'
-      ])
-      && data.keys().hasOnly([
-        'id', 'voucherNumber', 'category', 'title', 'description', 'beneficiaryName', 'amount',
-        'paymentMethod', 'referenceCode', 'approvalStatus', 'approvedByName',
-        'recordedByUid', 'recordedByName', 'expenseDate', 'createdAt', 'updatedAt'
-      ])
-      && isValidId(data.id)
-      && isValidRequiredString(data, 'voucherNumber', 3, 40)
-      && data.category in ['bereavement_aid', 'medical_aid', 'wedding_gift', 'operations', 'equipment']
-      && isValidRequiredString(data, 'title', 2, 150)
+      && data.paymentType in ['contribution', 'expense']
+      && isValidOptionalString(data, 'receiptNumber', 40)
+      && isValidOptionalString(data, 'voucherNumber', 40)
+      && isValidOptionalString(data, 'memberId', 128)
+      && isValidOptionalString(data, 'memberCode', 32)
+      && isValidOptionalString(data, 'memberName', 100)
+      && (!('month' in data) || (data.month is int && data.month >= 1 && data.month <= 12))
+      && (!('year' in data) || (data.year is int && data.year >= 2000 && data.year <= 2100))
+      && isValidOptionalString(data, 'monthKey', 10)
+      && isValidOptionalString(data, 'periodLabel', 64)
+      && (!('type' in data) || data.type in ['monthly', 'bereavement', 'penalty', 'registration'])
+      && (!('category' in data) || data.category in ['bereavement_aid', 'medical_aid', 'wedding_gift', 'operations', 'equipment'])
+      && isValidOptionalString(data, 'title', 150)
       && isValidOptionalString(data, 'description', 1000)
       && isValidOptionalString(data, 'beneficiaryName', 100)
       && isPositiveNumber(data.amount)
       && data.paymentMethod in ['telebirr', 'bank_transfer', 'cash']
+      && isValidOptionalString(data, 'bankName', 100)
       && isValidOptionalString(data, 'referenceCode', 80)
-      && data.approvalStatus in ['pending', 'approved', 'rejected']
+      && isValidOptionalString(data, 'referenceNote', 500)
+      && isValidOptionalString(data, 'receiptImageUrl', 450000)
+      && isValidOptionalString(data, 'notes', 500)
+      && (!('submittedByMember' in data) || data.submittedByMember is bool)
+      && (!('authorizationStatus' in data) || data.authorizationStatus in ['pending', 'authorized', 'rejected'])
+      && isValidOptionalString(data, 'authorizedByUid', 128)
+      && isValidOptionalString(data, 'authorizedByName', 100)
+      && isValidOptionalString(data, 'authorizedAt', 64)
+      && isValidOptionalString(data, 'rejectionReason', 300)
+      && (!('approvalStatus' in data) || data.approvalStatus in ['pending', 'approved', 'rejected'])
       && isValidOptionalString(data, 'approvedByName', 100)
+      && isValidRequiredString(data, 'recordedBy', 1, 100)
       && isValidRequiredString(data, 'recordedByUid', 1, 128)
       && isValidRequiredString(data, 'recordedByName', 2, 100)
-      && isValidRequiredString(data, 'expenseDate', 4, 32)
+      && isValidOptionalString(data, 'recordedByRole', 40)
+      && isValidOptionalString(data, 'recordedAt', 64)
+      && isValidOptionalString(data, 'expenseDate', 32)
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -280,23 +273,28 @@ service cloud.firestore {
 
     function isValidAnnouncementNotice(data) {
       return data.keys().hasAll([
-        'id', 'category', 'title', 'message', 'approvalStatus', 'authorUid', 'authorName', 'authorRole',
-        'createdAt', 'updatedAt'
+        'id', 'category', 'title', 'body', 'message', 'status', 'approvalStatus',
+        'authorUid', 'authorName', 'authorRole', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'category', 'title', 'message', 'eventDate', 'location',
-        'approvalStatus', 'authorUid', 'authorName', 'authorRole', 'createdAt', 'updatedAt'
+        'id', 'category', 'title', 'body', 'message', 'eventDate', 'location',
+        'status', 'approvalStatus', 'authorUid', 'authorUsername', 'authorName',
+        'authorRole', 'approvedBy', 'createdAt', 'updatedAt'
       ])
       && isValidId(data.id)
       && data.category in ['bereavement', 'joy', 'urgent', 'general']
       && isValidRequiredString(data, 'title', 2, 200)
+      && isValidRequiredString(data, 'body', 2, 2000)
       && isValidRequiredString(data, 'message', 2, 2000)
       && isValidOptionalString(data, 'eventDate', 32)
       && isValidOptionalString(data, 'location', 150)
+      && data.status in ['draft', 'approved', 'published']
       && data.approvalStatus in ['pending', 'approved', 'rejected']
       && isValidRequiredString(data, 'authorUid', 1, 128)
+      && isValidOptionalString(data, 'authorUsername', 60)
       && isValidRequiredString(data, 'authorName', 2, 100)
       && isValidRole(data.authorRole)
+      && isValidOptionalString(data, 'approvedBy', 100)
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -357,18 +355,27 @@ service cloud.firestore {
 
     function isValidAuditTrailEntry(data) {
       return data.keys().hasAll([
-        'id', 'actorUid', 'actorUsername', 'actorName', 'actorRole', 'action', 'targetType', 'summary', 'timestamp', 'createdAt'
+        'id', 'actorUid', 'actorUsername', 'actorName', 'actorRole',
+        'performedBy', 'performedByRole', 'action', 'targetCollection',
+        'targetType', 'details', 'summary', 'timestamp', 'createdAt'
       ])
       && data.keys().hasOnly([
-        'id', 'actorUid', 'actorUsername', 'actorName', 'actorRole', 'action', 'targetType', 'summary', 'timestamp', 'createdAt'
+        'id', 'actorUid', 'actorUsername', 'actorName', 'actorRole',
+        'performedBy', 'performedByRole', 'action', 'targetCollection',
+        'targetId', 'targetType', 'details', 'summary', 'timestamp', 'createdAt'
       ])
       && isValidId(data.id)
       && isValidRequiredString(data, 'actorUid', 1, 128)
       && isValidRequiredString(data, 'actorUsername', 1, 60)
       && isValidRequiredString(data, 'actorName', 2, 100)
       && isValidRole(data.actorRole)
+      && isValidRequiredString(data, 'performedBy', 1, 100)
+      && isValidRole(data.performedByRole)
       && isValidRequiredString(data, 'action', 2, 120)
+      && isValidRequiredString(data, 'targetCollection', 1, 60)
+      && isValidOptionalString(data, 'targetId', 128)
       && isValidRequiredString(data, 'targetType', 1, 60)
+      && isValidRequiredString(data, 'details', 2, 500)
       && isValidRequiredString(data, 'summary', 2, 500)
       && isValidRequiredString(data, 'timestamp', 4, 64)
       && data.createdAt is timestamp;
@@ -392,7 +399,7 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(configId);
     }
 
-    match /iddir_members/{memberId} {
+    match /members/{memberId} {
       allow get: if isAdmin() && isValidId(memberId);
       allow list: if isAdmin();
       allow create: if isAdmin() && isValidId(memberId) && isValidIddirMember(incoming())
@@ -404,68 +411,53 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'memberCode', 'fullName', 'phone', 'subCity', 'kebele', 'addressNote',
+          'memberCode', 'fullName', 'phone', 'address', 'kebeleOrSubcity',
+          'subCity', 'kebele', 'addressNote', 'familyInfo',
           'joinDate', 'status', 'photoUrl', 'monthlyDuesRate', 'guarantorName',
           'dependents', 'updatedAt'
         ]);
       allow delete: if isAdmin() && isValidId(memberId);
     }
 
-    match /iddir_accounts/{accountId} {
-      allow get: if isAdmin() && isValidId(accountId);
+    match /users/{userId} {
+      allow get: if isAdmin() && isValidId(userId);
       allow list: if isAdmin();
-      allow create: if isAdmin() && isValidId(accountId) && isValidUserAccount(incoming())
-        && incoming().id == accountId
+      allow create: if isAdmin() && isValidId(userId) && isValidUserAccount(incoming())
+        && incoming().id == userId
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isAdmin() && isValidId(accountId) && isValidUserAccount(incoming())
+      allow update: if isAdmin() && isValidId(userId) && isValidUserAccount(incoming())
         && incoming().id == existing().id
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'username', 'passwordSalt', 'passwordHash', 'role', 'memberId',
-          'displayName', 'active', 'updatedAt'
+          'fullName', 'displayName', 'isActive', 'active', 'updatedAt'
         ]);
-      allow delete: if isAdmin() && isValidId(accountId);
+      allow delete: if isAdmin() && isValidId(userId);
     }
 
-    match /iddir_contributions/{contributionId} {
-      allow get: if isAdmin() && isValidId(contributionId);
+    match /payments/{paymentId} {
+      allow get: if isAdmin() && isValidId(paymentId);
       allow list: if isAdmin();
-      allow create: if isAdmin() && isValidId(contributionId) && isValidContributionRecord(incoming())
-        && incoming().id == contributionId
+      allow create: if isAdmin() && isValidId(paymentId) && isValidPaymentEntry(incoming())
+        && incoming().id == paymentId
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isAdmin() && isValidId(contributionId) && isValidContributionRecord(incoming())
+      allow update: if isAdmin() && isValidId(paymentId) && isValidPaymentEntry(incoming())
         && incoming().id == existing().id
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'receiptNumber', 'memberId', 'memberCode', 'memberName', 'monthKey', 'periodLabel',
-          'type', 'amount', 'paymentMethod', 'bankName', 'referenceCode', 'receiptImageUrl', 'notes',
-          'submittedByMember', 'authorizationStatus', 'authorizedByUid', 'authorizedByName',
-          'authorizedAt', 'rejectionReason', 'recordedByUid', 'recordedByName', 'recordedAt', 'updatedAt'
+          'paymentType', 'receiptNumber', 'voucherNumber', 'memberId', 'memberCode',
+          'memberName', 'month', 'year', 'monthKey', 'periodLabel', 'type', 'category',
+          'title', 'description', 'beneficiaryName', 'amount', 'paymentMethod', 'bankName',
+          'referenceCode', 'referenceNote', 'receiptImageUrl', 'notes', 'submittedByMember',
+          'authorizationStatus', 'authorizedByUid', 'authorizedByName', 'authorizedAt',
+          'rejectionReason', 'approvalStatus', 'approvedByName', 'recordedBy', 'recordedByUid',
+          'recordedByName', 'recordedByRole', 'recordedAt', 'expenseDate', 'updatedAt'
         ]);
-      allow delete: if isAdmin() && isValidId(contributionId);
-    }
-
-    match /iddir_expenses/{expenseId} {
-      allow get: if isAdmin() && isValidId(expenseId);
-      allow list: if isAdmin();
-      allow create: if isAdmin() && isValidId(expenseId) && isValidExpenseRecord(incoming())
-        && incoming().id == expenseId
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-      allow update: if isAdmin() && isValidId(expenseId) && isValidExpenseRecord(incoming())
-        && incoming().id == existing().id
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'voucherNumber', 'category', 'title', 'description', 'beneficiaryName', 'amount',
-          'paymentMethod', 'referenceCode', 'approvalStatus', 'approvedByName',
-          'recordedByUid', 'recordedByName', 'expenseDate', 'updatedAt'
-        ]);
-      allow delete: if isAdmin() && isValidId(expenseId);
+      allow delete: if isAdmin() && isValidId(paymentId);
     }
 
     match /iddir_journal_entries/{entryId} {
@@ -522,7 +514,7 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(letterId);
     }
 
-    match /iddir_announcements/{announcementId} {
+    match /announcements/{announcementId} {
       allow get: if isAdmin() && isValidId(announcementId);
       allow list: if isAdmin();
       allow create: if isAdmin() && isValidId(announcementId) && isValidAnnouncementNotice(incoming())
@@ -534,8 +526,9 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'category', 'title', 'message', 'eventDate', 'location',
-          'approvalStatus', 'authorUid', 'authorName', 'authorRole', 'updatedAt'
+          'category', 'title', 'body', 'message', 'eventDate', 'location',
+          'status', 'approvalStatus', 'authorUid', 'authorUsername', 'authorName',
+          'authorRole', 'approvedBy', 'updatedAt'
         ]);
       allow delete: if isAdmin() && isValidId(announcementId);
     }
@@ -592,7 +585,7 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(bylawId);
     }
 
-    match /iddir_audit_logs/{logId} {
+    match /audit_logs/{logId} {
       allow get: if isAdmin() && isValidId(logId);
       allow list: if isAdmin();
       allow create: if isAdmin() && isValidId(logId) && isValidAuditTrailEntry(incoming())

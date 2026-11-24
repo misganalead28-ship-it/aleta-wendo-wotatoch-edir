@@ -3,9 +3,11 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   serverTimestamp,
   writeBatch,
   type Timestamp,
+  type Unsubscribe,
 } from 'firebase/firestore';
 import {
   auth as firebaseAuth,
@@ -50,18 +52,21 @@ export const ASSETS_IMG = {
   femaleAvatar: '/src/assets/images/member_portrait_female_1795457874208.jpg',
 };
 
-const STORAGE_KEY = 'aleta_iddir_management_db_v3';
-
 export const INITIAL_ADMIN_USERNAME = 'admin';
 export const INITIAL_ADMIN_PASSWORD =
   (import.meta.env.VITE_INITIAL_ADMIN_PASSWORD as string | undefined)?.trim() || 'admin123';
 
 export interface IddirDataProvider {
-  readonly driverName: 'localStorage' | 'firestore';
+  readonly driverName: 'memory' | 'firestore';
   isCloudConnected(): boolean;
   load(): Promise<IddirDatabase>;
+  loadUsersAndMembersForLogin(currentDb: IddirDatabase): Promise<IddirDatabase>;
   save(data: IddirDatabase): Promise<void>;
-  syncFromCloud(fallbackLocal?: IddirDatabase): Promise<{ db: IddirDatabase; seededCloud: boolean }>;
+  syncFromCloud(fallbackDb?: IddirDatabase): Promise<{ db: IddirDatabase; seededCloud: boolean }>;
+  subscribeRealtime(
+    onUpdate: (db: IddirDatabase) => void,
+    onError: (err: unknown) => void
+  ): () => void;
   reset(): Promise<IddirDatabase>;
 }
 
@@ -738,18 +743,17 @@ export async function buildSeedDatabase(): Promise<IddirDatabase> {
 
 const COLLECTIONS = {
   config: 'iddir_config',
-  members: 'iddir_members',
-  accounts: 'iddir_accounts',
-  contributions: 'iddir_contributions',
-  expenses: 'iddir_expenses',
+  members: 'members',
+  users: 'users',
+  payments: 'payments',
   journalEntries: 'iddir_journal_entries',
   minutes: 'iddir_minutes',
   letters: 'iddir_letters',
-  announcements: 'iddir_announcements',
+  announcements: 'announcements',
   inquiries: 'iddir_inquiries',
   tasks: 'iddir_tasks',
   bylaws: 'iddir_bylaws',
-  auditLogs: 'iddir_audit_logs',
+  auditLogs: 'audit_logs',
 } as const;
 
 function stripUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
@@ -768,6 +772,47 @@ function timestampToIso(val: unknown, fallback?: string): string {
   return fallback || new Date().toISOString();
 }
 
+function parseMonthYearFromString(dateOrMonth?: string): { month?: number; year?: number } {
+  if (!dateOrMonth) return {};
+  const match = /^(\d{4})-(\d{2})/.exec(dateOrMonth.trim());
+  if (!match) return {};
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  return {
+    year: Number.isInteger(year) && year >= 2000 && year <= 2100 ? year : undefined,
+    month: Number.isInteger(month) && month >= 1 && month <= 12 ? month : undefined,
+  };
+}
+
+function mapTargetTypeToCollection(targetType: string): string {
+  const normalized = targetType.trim();
+  switch (normalized) {
+    case 'አባል':
+      return COLLECTIONS.members;
+    case 'ተጠቃሚ':
+      return COLLECTIONS.users;
+    case 'ክፍያ':
+    case 'ወጪ':
+      return COLLECTIONS.payments;
+    case 'ማስታወቂያ':
+      return COLLECTIONS.announcements;
+    case 'ሂሳብ':
+      return COLLECTIONS.journalEntries;
+    case 'ስብሰባ':
+      return COLLECTIONS.minutes;
+    case 'ደብዳቤ':
+      return COLLECTIONS.letters;
+    case 'ጥያቄ':
+      return COLLECTIONS.inquiries;
+    case 'ተግባር':
+      return COLLECTIONS.tasks;
+    case 'ደንብ':
+      return COLLECTIONS.bylaws;
+    default:
+      return COLLECTIONS.config;
+  }
+}
+
 function sanitizeMemberPayload(m: IddirMember) {
   const safeId = sanitizeId(m.id);
   const safePhone = clampStr(
@@ -780,14 +825,30 @@ function sanitizeMemberPayload(m: IddirMember) {
     relationship: d.relationship,
     age: Math.max(0, Number(d.age) || 0),
   }));
+  const subCity = clampStr(m.subCity || 'አለታ ወንዶ', LIMITS.subCityMax);
+  const kebele = clampStr(m.kebele || 'ቀበሌ 01', LIMITS.kebeleMax);
+  const addressNote = m.addressNote ? clampStr(m.addressNote, LIMITS.addressMax) : undefined;
+  const address = clampStr(
+    [subCity, kebele, addressNote].filter(Boolean).join('፣ '),
+    LIMITS.addressMax
+  );
+  const kebeleOrSubcity = clampStr(`${subCity} · ${kebele}`, 140);
+  const familyInfo =
+    dependents.length > 0
+      ? clampStr(dependents.map((d) => d.fullName).join('፣ '), 600)
+      : undefined;
+
   return stripUndefined({
     id: safeId,
     memberCode: sanitizeMemberCode(m.memberCode),
     fullName: clampStr(m.fullName && m.fullName.trim().length >= 2 ? m.fullName : 'አባል', LIMITS.fullNameMax),
     phone: safePhone,
-    subCity: clampStr(m.subCity || 'አለታ ወንዶ', LIMITS.subCityMax),
-    kebele: clampStr(m.kebele || 'ቀበሌ 01', LIMITS.kebeleMax),
-    addressNote: m.addressNote ? clampStr(m.addressNote, LIMITS.addressMax) : undefined,
+    address,
+    kebeleOrSubcity,
+    subCity,
+    kebele,
+    addressNote,
+    familyInfo,
     joinDate: clampStr(m.joinDate || new Date().toISOString().slice(0, 10), 32),
     status: m.status === 'suspended' ? 'suspended' : 'active',
     photoUrl: m.photoUrl ? clampStr(m.photoUrl, LIMITS.photoUrlMax) : undefined,
@@ -804,6 +865,11 @@ function sanitizeAccountPayload(u: UserAccount) {
     .toLowerCase()
     .replace(/[^a-z0-9_.\-]/g, '')
     .slice(0, 60);
+  const safeName = clampStr(
+    u.displayName && u.displayName.trim().length >= 2 ? u.displayName : 'ተጠቃሚ',
+    LIMITS.fullNameMax
+  );
+  const isActive = Boolean(u.active);
   return stripUndefined({
     id: safeId,
     username: cleanUsername.length >= 3 ? cleanUsername : `user_${safeId.slice(-6)}`,
@@ -811,20 +877,37 @@ function sanitizeAccountPayload(u: UserAccount) {
     passwordHash: clampStr(u.passwordHash, 128),
     role: u.role,
     memberId: u.memberId ? sanitizeId(u.memberId) : undefined,
-    displayName: clampStr(u.displayName && u.displayName.trim().length >= 2 ? u.displayName : 'ተጠቃሚ', LIMITS.fullNameMax),
-    active: Boolean(u.active),
+    fullName: safeName,
+    displayName: safeName,
+    isActive,
+    active: isActive,
   });
 }
 
-function sanitizeContributionPayload(c: ContributionRecord) {
+function sanitizeContributionAsPaymentPayload(
+  c: ContributionRecord,
+  userRoleMap: Map<string, UserRole>
+) {
   const safeId = sanitizeId(c.id);
   const receiptNumber = clampStr(c.receiptNumber || 'RCP-000', 40);
+  const { month, year } = parseMonthYearFromString(c.monthKey);
+  const recordedByName = clampStr(
+    c.recordedByName && c.recordedByName.trim().length >= 2 ? c.recordedByName : 'አድሚን',
+    LIMITS.fullNameMax
+  );
+  const recordedByUid = clampStr(c.recordedByUid || 'usr_admin', 128);
+  const recordedByRole =
+    userRoleMap.get(recordedByUid) || (c.submittedByMember ? 'member' : 'treasurer');
+
   return stripUndefined({
     id: safeId,
+    paymentType: 'contribution' as const,
     receiptNumber,
     memberId: sanitizeId(c.memberId),
     memberCode: sanitizeMemberCode(c.memberCode),
     memberName: clampStr(c.memberName && c.memberName.trim().length >= 2 ? c.memberName : 'አባል', LIMITS.fullNameMax),
+    month,
+    year,
     monthKey: clampStr(c.monthKey || getCurrentMonthKey(), 10),
     periodLabel: clampStr(c.periodLabel || c.monthKey || 'ወር', 64),
     type: c.type,
@@ -832,6 +915,7 @@ function sanitizeContributionPayload(c: ContributionRecord) {
     paymentMethod: c.paymentMethod,
     bankName: c.bankName ? clampStr(c.bankName, 100) : undefined,
     referenceCode: clampStr(c.referenceCode || receiptNumber, LIMITS.transactionRefMax),
+    referenceNote: c.notes ? clampStr(c.notes, LIMITS.notesMax) : undefined,
     receiptImageUrl: c.receiptImageUrl ? clampStr(c.receiptImageUrl, LIMITS.receiptUrlMax) : undefined,
     notes: c.notes !== undefined ? clampStr(c.notes, LIMITS.notesMax) : undefined,
     submittedByMember: c.submittedByMember !== undefined ? Boolean(c.submittedByMember) : undefined,
@@ -840,17 +924,33 @@ function sanitizeContributionPayload(c: ContributionRecord) {
     authorizedByName: c.authorizedByName ? clampStr(c.authorizedByName, LIMITS.fullNameMax) : undefined,
     authorizedAt: c.authorizedAt ? clampStr(c.authorizedAt, 64) : undefined,
     rejectionReason: c.rejectionReason ? clampStr(c.rejectionReason, 300) : undefined,
-    recordedByUid: clampStr(c.recordedByUid || 'usr_admin', 128),
-    recordedByName: clampStr(c.recordedByName || 'አድሚን', LIMITS.fullNameMax),
+    recordedBy: recordedByName,
+    recordedByUid,
+    recordedByName,
+    recordedByRole,
     recordedAt: clampStr(c.recordedAt || new Date().toISOString(), 64),
   });
 }
 
-function sanitizeExpensePayload(e: ExpenseRecord) {
+function sanitizeExpenseAsPaymentPayload(
+  e: ExpenseRecord,
+  userRoleMap: Map<string, UserRole>
+) {
   const safeId = sanitizeId(e.id);
+  const { month, year } = parseMonthYearFromString(e.expenseDate);
+  const recordedByName = clampStr(
+    e.recordedByName && e.recordedByName.trim().length >= 2 ? e.recordedByName : 'ገንዘብ ያዥ',
+    LIMITS.fullNameMax
+  );
+  const recordedByUid = clampStr(e.recordedByUid || 'usr_treas', 128);
+  const recordedByRole = userRoleMap.get(recordedByUid) || 'treasurer';
+
   return stripUndefined({
     id: safeId,
+    paymentType: 'expense' as const,
     voucherNumber: clampStr(e.voucherNumber || 'VCH-001', 40),
+    month,
+    year,
     category: e.category,
     title: clampStr(e.title && e.title.trim().length >= 2 ? e.title : 'ወጪ', LIMITS.expenseTitleMax),
     description: clampStr(e.description || e.title || 'ዝርዝር ወጪ', LIMITS.expenseDescMax),
@@ -858,10 +958,13 @@ function sanitizeExpensePayload(e: ExpenseRecord) {
     amount: Math.max(1, Number(e.amount) || 1),
     paymentMethod: e.paymentMethod,
     referenceCode: e.referenceCode ? clampStr(e.referenceCode, LIMITS.transactionRefMax) : undefined,
+    referenceNote: e.description ? clampStr(e.description, LIMITS.notesMax) : undefined,
     approvalStatus: e.approvalStatus || 'pending',
     approvedByName: e.approvedByName ? clampStr(e.approvedByName, LIMITS.fullNameMax) : undefined,
-    recordedByUid: clampStr(e.recordedByUid || 'usr_treas', 128),
-    recordedByName: clampStr(e.recordedByName || 'ገንዘብ ያዥ', LIMITS.fullNameMax),
+    recordedBy: recordedByName,
+    recordedByUid,
+    recordedByName,
+    recordedByRole,
     expenseDate: clampStr(e.expenseDate || new Date().toISOString().slice(0, 10), 32),
   });
 }
@@ -919,18 +1022,33 @@ function sanitizeLetterPayload(l: OfficialLetter) {
   });
 }
 
-function sanitizeAnnouncementPayload(a: AnnouncementNotice) {
+function sanitizeAnnouncementPayload(
+  a: AnnouncementNotice,
+  usernameById?: Map<string, string>
+) {
+  const safeBody = clampStr(
+    a.message && a.message.trim().length >= 2 ? a.message : 'መልዕክት',
+    LIMITS.announcementMax
+  );
+  const approvalStatus: ApprovalStatus = a.approvalStatus || 'approved';
+  const status = approvalStatus === 'approved' ? 'published' : 'draft';
+  const authorUsername = usernameById?.get(a.authorUid);
+
   return stripUndefined({
     id: sanitizeId(a.id),
     category: a.category || 'general',
     title: clampStr(a.title && a.title.trim().length >= 2 ? a.title : 'ማስታወቂያ', 200),
-    message: clampStr(a.message && a.message.trim().length >= 2 ? a.message : 'መልዕክት', LIMITS.announcementMax),
+    body: safeBody,
+    message: safeBody,
     eventDate: a.eventDate ? clampStr(a.eventDate, 32) : undefined,
     location: a.location ? clampStr(a.location, 150) : undefined,
-    approvalStatus: a.approvalStatus || 'approved',
+    status,
+    approvalStatus,
     authorUid: clampStr(a.authorUid || 'usr_pr', 128),
+    authorUsername: authorUsername ? clampStr(authorUsername, 60) : undefined,
     authorName: clampStr(a.authorName || 'ህዝብ ግንኙነት', LIMITS.fullNameMax),
     authorRole: a.authorRole,
+    approvedBy: approvalStatus === 'approved' ? clampStr(a.authorName || 'አመራር', LIMITS.fullNameMax) : undefined,
   });
 }
 
@@ -971,17 +1089,158 @@ function sanitizeBylawPayload(b: BylawRule) {
 }
 
 function sanitizeAuditPayload(a: AuditTrailEntry) {
+  const safeSummary = clampStr(
+    a.summary && a.summary.trim().length >= 2 ? a.summary : 'የሲስተም እንቅስቃሴ',
+    LIMITS.auditSummaryMax
+  );
+  const safeActorName = clampStr(
+    a.actorName && a.actorName.trim().length >= 2 ? a.actorName : 'አድሚን',
+    LIMITS.fullNameMax
+  );
   return stripUndefined({
     id: sanitizeId(a.id),
     actorUid: clampStr(a.actorUid || 'usr_admin', 128),
     actorUsername: clampStr(a.actorUsername || 'admin', 60),
-    actorName: clampStr(a.actorName && a.actorName.trim().length >= 2 ? a.actorName : 'አድሚን', LIMITS.fullNameMax),
+    actorName: safeActorName,
     actorRole: a.actorRole,
+    performedBy: safeActorName,
+    performedByRole: a.actorRole,
     action: clampStr(a.action && a.action.trim().length >= 2 ? a.action : 'ተግባር', 120),
+    targetCollection: clampStr(mapTargetTypeToCollection(a.targetType || 'ሲስተም'), 60),
     targetType: clampStr(a.targetType || 'ሲስተም', 60),
-    summary: clampStr(a.summary && a.summary.trim().length >= 2 ? a.summary : 'የሲስተም እንቅስቃሴ', LIMITS.auditSummaryMax),
+    details: safeSummary,
+    summary: safeSummary,
     timestamp: clampStr(a.timestamp || new Date().toISOString(), 64),
   });
+}
+
+function deserializeMemberDoc(m: Record<string, unknown>): IddirMember {
+  return {
+    ...(m as unknown as IddirMember),
+    dependents: Array.isArray(m.dependents) ? (m.dependents as DependentInfo[]) : [],
+    createdAt: timestampToIso(m.createdAt),
+    updatedAt: timestampToIso(m.updatedAt),
+  };
+}
+
+function deserializeUserDoc(u: Record<string, unknown>): UserAccount {
+  return {
+    ...(u as unknown as UserAccount),
+    displayName: String(u.displayName || u.fullName || 'ተጠቃሚ'),
+    active: typeof u.active === 'boolean' ? u.active : Boolean(u.isActive),
+    createdAt: timestampToIso(u.createdAt),
+    updatedAt: timestampToIso(u.updatedAt),
+  };
+}
+
+function splitPaymentDocs(paymentsRaw: Record<string, unknown>[]): {
+  contributions: ContributionRecord[];
+  expenses: ExpenseRecord[];
+} {
+  const contributions: ContributionRecord[] = [];
+  const expenses: ExpenseRecord[] = [];
+
+  for (const p of paymentsRaw) {
+    const isExpense =
+      p.paymentType === 'expense' || (!p.paymentType && typeof p.voucherNumber === 'string');
+    if (isExpense) {
+      expenses.push({
+        id: String(p.id),
+        voucherNumber: String(p.voucherNumber || 'VCH-001'),
+        category: (p.category as ExpenseCategory) || 'operations',
+        title: String(p.title || 'ወጪ'),
+        description: String(p.description || p.referenceNote || p.title || ''),
+        beneficiaryName: typeof p.beneficiaryName === 'string' ? p.beneficiaryName : undefined,
+        amount: Number(p.amount) || 0,
+        paymentMethod: (p.paymentMethod as PaymentMethod) || 'cash',
+        referenceCode: typeof p.referenceCode === 'string' ? p.referenceCode : undefined,
+        approvalStatus: (p.approvalStatus as ApprovalStatus) || 'pending',
+        approvedByName: typeof p.approvedByName === 'string' ? p.approvedByName : undefined,
+        recordedByUid: String(p.recordedByUid || 'usr_treas'),
+        recordedByName: String(p.recordedByName || p.recordedBy || 'ገንዘብ ያዥ'),
+        expenseDate: String(
+          p.expenseDate || timestampToIso(p.createdAt).slice(0, 10)
+        ),
+        createdAt: timestampToIso(p.createdAt),
+      });
+    } else {
+      const monthKey =
+        typeof p.monthKey === 'string' && p.monthKey.length >= 7
+          ? p.monthKey
+          : typeof p.year === 'number' && typeof p.month === 'number'
+            ? `${p.year}-${String(p.month).padStart(2, '0')}`
+            : getCurrentMonthKey();
+      contributions.push({
+        id: String(p.id),
+        receiptNumber: String(p.receiptNumber || 'RCP-000'),
+        memberId: String(p.memberId || ''),
+        memberCode: String(p.memberCode || 'EDR'),
+        memberName: String(p.memberName || 'አባል'),
+        monthKey,
+        periodLabel: String(p.periodLabel || formatMonthLabelAm(monthKey)),
+        type: (p.type as ContributionType) || 'monthly',
+        amount: Number(p.amount) || 0,
+        paymentMethod: (p.paymentMethod as PaymentMethod) || 'cash',
+        bankName: typeof p.bankName === 'string' ? p.bankName : undefined,
+        referenceCode: String(p.referenceCode || p.receiptNumber || ''),
+        receiptImageUrl: typeof p.receiptImageUrl === 'string' ? p.receiptImageUrl : undefined,
+        notes:
+          typeof p.notes === 'string'
+            ? p.notes
+            : typeof p.referenceNote === 'string'
+              ? p.referenceNote
+              : undefined,
+        submittedByMember:
+          typeof p.submittedByMember === 'boolean' ? p.submittedByMember : undefined,
+        authorizationStatus:
+          (p.authorizationStatus as PaymentAuthorizationStatus) || 'authorized',
+        authorizedByUid: typeof p.authorizedByUid === 'string' ? p.authorizedByUid : undefined,
+        authorizedByName: typeof p.authorizedByName === 'string' ? p.authorizedByName : undefined,
+        authorizedAt: typeof p.authorizedAt === 'string' ? p.authorizedAt : undefined,
+        rejectionReason: typeof p.rejectionReason === 'string' ? p.rejectionReason : undefined,
+        recordedByUid: String(p.recordedByUid || 'usr_treas'),
+        recordedByName: String(p.recordedByName || p.recordedBy || 'ገንዘብ ያዥ'),
+        recordedAt: String(p.recordedAt || timestampToIso(p.createdAt)),
+      });
+    }
+  }
+
+  contributions.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
+  expenses.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return { contributions, expenses };
+}
+
+function deserializeAnnouncementDoc(a: Record<string, unknown>): AnnouncementNotice {
+  const approvalStatus: ApprovalStatus =
+    (a.approvalStatus as ApprovalStatus) ||
+    (a.status === 'published' || a.status === 'approved' ? 'approved' : 'pending');
+  return {
+    id: String(a.id),
+    category: (a.category as NoticeCategory) || 'general',
+    title: String(a.title || 'ማስታወቂያ'),
+    message: String(a.message || a.body || ''),
+    eventDate: typeof a.eventDate === 'string' ? a.eventDate : undefined,
+    location: typeof a.location === 'string' ? a.location : undefined,
+    approvalStatus,
+    authorUid: String(a.authorUid || 'usr_pr'),
+    authorName: String(a.authorName || 'ህዝብ ግንኙነት'),
+    authorRole: (a.authorRole as UserRole) || 'public_relations',
+    createdAt: timestampToIso(a.createdAt),
+  };
+}
+
+function deserializeAuditDoc(a: Record<string, unknown>): AuditTrailEntry {
+  return {
+    id: String(a.id),
+    actorUid: String(a.actorUid || 'usr_admin'),
+    actorUsername: String(a.actorUsername || 'admin'),
+    actorName: String(a.actorName || a.performedBy || 'አድሚን'),
+    actorRole: (a.actorRole || a.performedByRole || 'admin') as UserRole,
+    action: String(a.action || 'ተግባር'),
+    targetType: String(a.targetType || a.targetCollection || 'ሲስተም'),
+    summary: String(a.summary || a.details || ''),
+    timestamp: String(a.timestamp || timestampToIso(a.createdAt)),
+  };
 }
 
 type BatchWriteOp =
@@ -991,43 +1250,15 @@ type BatchWriteOp =
 
 class FirestoreIddirProvider implements IddirDataProvider {
   private lastCloudDb: IddirDatabase | null = null;
+  private inMemoryDb: IddirDatabase | null = null;
   private cloudConfigExists = false;
 
-  get driverName(): 'localStorage' | 'firestore' {
-    return this.isCloudConnected() ? 'firestore' : 'localStorage';
+  get driverName(): 'memory' | 'firestore' {
+    return this.isCloudConnected() ? 'firestore' : 'memory';
   }
 
   isCloudConnected(): boolean {
     return Boolean(firebaseAuth.currentUser && firebaseAuth.currentUser.emailVerified);
-  }
-
-  private readLocalCache(): IddirDatabase | null {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as IddirDatabase;
-      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.contributions)) {
-        return {
-          ...parsed,
-          version: 3,
-          latePenaltyAmount: parsed.latePenaltyAmount || 50,
-          manualJournalEntries: Array.isArray(parsed.manualJournalEntries)
-            ? parsed.manualJournalEntries
-            : [],
-          contributions: parsed.contributions.map((c) => ({
-            ...c,
-            authorizationStatus: c.authorizationStatus || 'authorized',
-          })),
-        };
-      }
-    } catch {
-      // Fallback
-    }
-    return null;
-  }
-
-  private writeLocalCache(data: IddirDatabase): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }
 
   private async commitBatchOps(ops: BatchWriteOp[]): Promise<void> {
@@ -1076,6 +1307,75 @@ class FirestoreIddirProvider implements IddirDataProvider {
     }
   }
 
+  private assembleDatabase(parts: {
+    configData: Record<string, unknown> | null;
+    membersRaw: Record<string, unknown>[];
+    usersRaw: Record<string, unknown>[];
+    paymentsRaw: Record<string, unknown>[];
+    journalsRaw: Record<string, unknown>[];
+    minutesRaw: Record<string, unknown>[];
+    lettersRaw: Record<string, unknown>[];
+    announcementsRaw: Record<string, unknown>[];
+    inquiriesRaw: Record<string, unknown>[];
+    tasksRaw: Record<string, unknown>[];
+    bylawsRaw: Record<string, unknown>[];
+    auditLogsRaw: Record<string, unknown>[];
+  }): IddirDatabase {
+    const { contributions, expenses } = splitPaymentDocs(parts.paymentsRaw);
+    return {
+      version: Number(parts.configData?.version) || 3,
+      associationName: String(
+        parts.configData?.associationName || 'የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር'
+      ),
+      monthlyDuesAmount: Number(parts.configData?.monthlyDuesAmount) || 500,
+      latePenaltyAmount: Number(parts.configData?.latePenaltyAmount) || 50,
+      members: parts.membersRaw.map(deserializeMemberDoc),
+      users: parts.usersRaw.map(deserializeUserDoc),
+      contributions,
+      expenses,
+      manualJournalEntries: parts.journalsRaw
+        .map((j) => ({
+          ...(j as unknown as JournalEntry),
+          createdAt: timestampToIso(j.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      minutes: parts.minutesRaw
+        .map((m) => ({
+          ...(m as unknown as MeetingMinute),
+          createdAt: timestampToIso(m.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      letters: parts.lettersRaw
+        .map((l) => ({
+          ...(l as unknown as OfficialLetter),
+          createdAt: timestampToIso(l.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      announcements: parts.announcementsRaw
+        .map(deserializeAnnouncementDoc)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      inquiries: parts.inquiriesRaw
+        .map((i) => ({
+          ...(i as unknown as MemberInquiry),
+          createdAt: timestampToIso(i.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      tasks: parts.tasksRaw
+        .map((t) => ({
+          ...(t as unknown as CommitteeTask),
+          updatedAt: timestampToIso(t.updatedAt),
+        }))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      bylaws: parts.bylawsRaw.map((b) => ({
+        ...(b as unknown as BylawRule),
+        updatedAt: timestampToIso(b.updatedAt),
+      })),
+      auditLogs: parts.auditLogsRaw
+        .map(deserializeAuditDoc)
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    };
+  }
+
   private async loadFromFirestore(): Promise<IddirDatabase | null> {
     let configData: Record<string, unknown> | null = null;
     try {
@@ -1092,9 +1392,8 @@ class FirestoreIddirProvider implements IddirDataProvider {
 
     const [
       membersRaw,
-      accountsRaw,
-      contributionsRaw,
-      expensesRaw,
+      usersRaw,
+      paymentsRaw,
       journalsRaw,
       minutesRaw,
       lettersRaw,
@@ -1105,9 +1404,8 @@ class FirestoreIddirProvider implements IddirDataProvider {
       auditLogsRaw,
     ] = await Promise.all([
       this.fetchCollection<Record<string, unknown>>(COLLECTIONS.members),
-      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.accounts),
-      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.contributions),
-      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.expenses),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.users),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.payments),
       this.fetchCollection<Record<string, unknown>>(COLLECTIONS.journalEntries),
       this.fetchCollection<Record<string, unknown>>(COLLECTIONS.minutes),
       this.fetchCollection<Record<string, unknown>>(COLLECTIONS.letters),
@@ -1118,87 +1416,23 @@ class FirestoreIddirProvider implements IddirDataProvider {
       this.fetchCollection<Record<string, unknown>>(COLLECTIONS.auditLogs),
     ]);
 
-    const loaded: IddirDatabase = {
-      version: Number(configData?.version) || 3,
-      associationName: String(
-        configData?.associationName || 'የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር'
-      ),
-      monthlyDuesAmount: Number(configData?.monthlyDuesAmount) || 500,
-      latePenaltyAmount: Number(configData?.latePenaltyAmount) || 50,
-      members: membersRaw.map((m) => ({
-        ...(m as unknown as IddirMember),
-        dependents: Array.isArray(m.dependents) ? (m.dependents as DependentInfo[]) : [],
-        createdAt: timestampToIso(m.createdAt),
-        updatedAt: timestampToIso(m.updatedAt),
-      })),
-      users: accountsRaw.map((u) => ({
-        ...(u as unknown as UserAccount),
-        createdAt: timestampToIso(u.createdAt),
-        updatedAt: timestampToIso(u.updatedAt),
-      })),
-      contributions: contributionsRaw
-        .map((c) => ({
-          ...(c as unknown as ContributionRecord),
-          authorizationStatus:
-            (c.authorizationStatus as PaymentAuthorizationStatus) || 'authorized',
-        }))
-        .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt)),
-      expenses: expensesRaw
-        .map((e) => ({
-          ...(e as unknown as ExpenseRecord),
-          createdAt: timestampToIso(e.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      manualJournalEntries: journalsRaw
-        .map((j) => ({
-          ...(j as unknown as JournalEntry),
-          createdAt: timestampToIso(j.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      minutes: minutesRaw
-        .map((m) => ({
-          ...(m as unknown as MeetingMinute),
-          createdAt: timestampToIso(m.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      letters: lettersRaw
-        .map((l) => ({
-          ...(l as unknown as OfficialLetter),
-          createdAt: timestampToIso(l.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      announcements: announcementsRaw
-        .map((a) => ({
-          ...(a as unknown as AnnouncementNotice),
-          createdAt: timestampToIso(a.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      inquiries: inquiriesRaw
-        .map((i) => ({
-          ...(i as unknown as MemberInquiry),
-          createdAt: timestampToIso(i.createdAt),
-        }))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-      tasks: tasksRaw
-        .map((t) => ({
-          ...(t as unknown as CommitteeTask),
-          updatedAt: timestampToIso(t.updatedAt),
-        }))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-      bylaws: bylawsRaw.map((b) => ({
-        ...(b as unknown as BylawRule),
-        updatedAt: timestampToIso(b.updatedAt),
-      })),
-      auditLogs: auditLogsRaw
-        .map((a) => ({
-          ...(a as unknown as AuditTrailEntry),
-          timestamp: String(a.timestamp || timestampToIso(a.createdAt)),
-        }))
-        .sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
-    };
+    const loaded = this.assembleDatabase({
+      configData,
+      membersRaw,
+      usersRaw,
+      paymentsRaw,
+      journalsRaw,
+      minutesRaw,
+      lettersRaw,
+      announcementsRaw,
+      inquiriesRaw,
+      tasksRaw,
+      bylawsRaw,
+      auditLogsRaw,
+    });
 
     this.lastCloudDb = loaded;
-    this.writeLocalCache(loaded);
+    this.inMemoryDb = loaded;
     return loaded;
   }
 
@@ -1210,10 +1444,10 @@ class FirestoreIddirProvider implements IddirDataProvider {
     allowUpdateAndDelete = true
   ): BatchWriteOp[] {
     const ops: BatchWriteOp[] = [];
-    const prevMap = new Map<string, { item: T; sig: string }>();
+    const prevMap = new Map<string, { sig: string }>();
     prevItems.forEach((item) => {
       const sanitized = sanitizeFn(item);
-      prevMap.set(String(sanitized.id), { item, sig: JSON.stringify(sanitized) });
+      prevMap.set(String(sanitized.id), { sig: JSON.stringify(sanitized) });
     });
 
     const nextIds = new Set<string>();
@@ -1226,6 +1460,40 @@ class FirestoreIddirProvider implements IddirDataProvider {
         ops.push({ kind: 'create', col: colName, id, data: sanitized });
       } else if (allowUpdateAndDelete && prev.sig !== JSON.stringify(sanitized)) {
         ops.push({ kind: 'update', col: colName, id, data: sanitized });
+      }
+    }
+
+    if (allowUpdateAndDelete) {
+      for (const prevId of prevMap.keys()) {
+        if (!nextIds.has(prevId)) {
+          ops.push({ kind: 'delete', col: colName, id: prevId });
+        }
+      }
+    }
+    return ops;
+  }
+
+  private diffSanitizedRecords(
+    colName: string,
+    prevRecords: Record<string, unknown>[],
+    nextRecords: Record<string, unknown>[],
+    allowUpdateAndDelete = true
+  ): BatchWriteOp[] {
+    const ops: BatchWriteOp[] = [];
+    const prevMap = new Map<string, string>();
+    for (const rec of prevRecords) {
+      prevMap.set(String(rec.id), JSON.stringify(rec));
+    }
+
+    const nextIds = new Set<string>();
+    for (const rec of nextRecords) {
+      const id = String(rec.id);
+      nextIds.add(id);
+      const prevSig = prevMap.get(id);
+      if (!prevSig) {
+        ops.push({ kind: 'create', col: colName, id, data: rec });
+      } else if (allowUpdateAndDelete && prevSig !== JSON.stringify(rec)) {
+        ops.push({ kind: 'update', col: colName, id, data: rec });
       }
     }
 
@@ -1261,15 +1529,49 @@ class FirestoreIddirProvider implements IddirDataProvider {
       ops.push({ kind: 'update', col: COLLECTIONS.config, id: 'main', data: configPayload });
     }
 
+    const prevRoleMap = new Map<string, UserRole>(
+      (prevDb?.users || []).map((u) => [u.id, u.role])
+    );
+    const nextRoleMap = new Map<string, UserRole>(nextDb.users.map((u) => [u.id, u.role]));
+    const prevUsernameMap = new Map<string, string>(
+      (prevDb?.users || []).map((u) => [u.id, u.username])
+    );
+    const nextUsernameMap = new Map<string, string>(
+      nextDb.users.map((u) => [u.id, u.username])
+    );
+
+    const prevPayments = [
+      ...(prevDb?.contributions || []).map((c) => sanitizeContributionAsPaymentPayload(c, prevRoleMap)),
+      ...(prevDb?.expenses || []).map((e) => sanitizeExpenseAsPaymentPayload(e, prevRoleMap)),
+    ];
+    const nextPayments = [
+      ...nextDb.contributions.map((c) => sanitizeContributionAsPaymentPayload(c, nextRoleMap)),
+      ...nextDb.expenses.map((e) => sanitizeExpenseAsPaymentPayload(e, nextRoleMap)),
+    ];
+
     ops.push(
       ...this.diffCollection(COLLECTIONS.members, prevDb?.members || [], nextDb.members, sanitizeMemberPayload),
-      ...this.diffCollection(COLLECTIONS.accounts, prevDb?.users || [], nextDb.users, sanitizeAccountPayload),
-      ...this.diffCollection(COLLECTIONS.contributions, prevDb?.contributions || [], nextDb.contributions, sanitizeContributionPayload),
-      ...this.diffCollection(COLLECTIONS.expenses, prevDb?.expenses || [], nextDb.expenses, sanitizeExpensePayload),
+      ...this.diffCollection(COLLECTIONS.users, prevDb?.users || [], nextDb.users, sanitizeAccountPayload),
+      ...this.diffSanitizedRecords(COLLECTIONS.payments, prevPayments, nextPayments),
       ...this.diffCollection(COLLECTIONS.journalEntries, prevDb?.manualJournalEntries || [], nextDb.manualJournalEntries, sanitizeJournalPayload),
       ...this.diffCollection(COLLECTIONS.minutes, prevDb?.minutes || [], nextDb.minutes, sanitizeMinutePayload),
       ...this.diffCollection(COLLECTIONS.letters, prevDb?.letters || [], nextDb.letters, sanitizeLetterPayload),
-      ...this.diffCollection(COLLECTIONS.announcements, prevDb?.announcements || [], nextDb.announcements, sanitizeAnnouncementPayload),
+      ...this.diffCollection(
+        COLLECTIONS.announcements,
+        prevDb?.announcements || [],
+        nextDb.announcements,
+        (a) => sanitizeAnnouncementPayload(a, prevUsernameMap)
+      ).map((op) =>
+        op.kind === 'create' || op.kind === 'update'
+          ? {
+              ...op,
+              data: sanitizeAnnouncementPayload(
+                nextDb.announcements.find((item) => sanitizeId(item.id) === op.id)!,
+                nextUsernameMap
+              ),
+            }
+          : op
+      ),
       ...this.diffCollection(COLLECTIONS.inquiries, prevDb?.inquiries || [], nextDb.inquiries, sanitizeInquiryPayload),
       ...this.diffCollection(COLLECTIONS.tasks, prevDb?.tasks || [], nextDb.tasks, sanitizeTaskPayload),
       ...this.diffCollection(COLLECTIONS.bylaws, prevDb?.bylaws || [], nextDb.bylaws, sanitizeBylawPayload),
@@ -1281,36 +1583,180 @@ class FirestoreIddirProvider implements IddirDataProvider {
       this.cloudConfigExists = true;
     }
     this.lastCloudDb = nextDb;
+    this.inMemoryDb = nextDb;
   }
 
   async syncFromCloud(
-    fallbackLocal?: IddirDatabase
+    fallbackDb?: IddirDatabase
   ): Promise<{ db: IddirDatabase; seededCloud: boolean }> {
     const cloudDb = await this.loadFromFirestore();
-    if (cloudDb) {
+    if (cloudDb && cloudDb.users.length > 0) {
       return { db: cloudDb, seededCloud: false };
     }
-    const seedSource = fallbackLocal || this.readLocalCache() || (await buildSeedDatabase());
+    const seedSource = fallbackDb || this.inMemoryDb || (await buildSeedDatabase());
     this.lastCloudDb = null;
     await this.pushDiffToFirestore(seedSource);
-    this.writeLocalCache(seedSource);
+    this.inMemoryDb = seedSource;
     return { db: seedSource, seededCloud: true };
   }
 
   async load(): Promise<IddirDatabase> {
-    const cached = this.readLocalCache();
     if (this.isCloudConnected()) {
-      const { db } = await this.syncFromCloud(cached || undefined);
+      const { db } = await this.syncFromCloud(this.inMemoryDb || undefined);
       return db;
     }
-    if (cached) return cached;
+    if (this.inMemoryDb) return this.inMemoryDb;
     const seeded = await buildSeedDatabase();
-    this.writeLocalCache(seeded);
+    this.inMemoryDb = seeded;
     return seeded;
   }
 
+  async loadUsersAndMembersForLogin(currentDb: IddirDatabase): Promise<IddirDatabase> {
+    if (!this.isCloudConnected()) {
+      return currentDb;
+    }
+    const [usersRaw, membersRaw] = await Promise.all([
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.users),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.members),
+    ]);
+    if (usersRaw.length === 0) {
+      const { db } = await this.syncFromCloud(currentDb);
+      return db;
+    }
+    const refreshed: IddirDatabase = {
+      ...currentDb,
+      users: usersRaw.map(deserializeUserDoc),
+      members: membersRaw.length > 0 ? membersRaw.map(deserializeMemberDoc) : currentDb.members,
+    };
+    this.inMemoryDb = refreshed;
+    return refreshed;
+  }
+
+  subscribeRealtime(
+    onUpdate: (db: IddirDatabase) => void,
+    onError: (err: unknown) => void
+  ): () => void {
+    if (!this.isCloudConnected()) {
+      return () => {};
+    }
+
+    let disposed = false;
+    const base = this.lastCloudDb || this.inMemoryDb;
+    const state = {
+      configData: base
+        ? {
+            associationName: base.associationName,
+            monthlyDuesAmount: base.monthlyDuesAmount,
+            latePenaltyAmount: base.latePenaltyAmount,
+            version: base.version,
+          }
+        : (null as Record<string, unknown> | null),
+      membersRaw: [] as Record<string, unknown>[],
+      usersRaw: [] as Record<string, unknown>[],
+      paymentsRaw: [] as Record<string, unknown>[],
+      journalsRaw: [] as Record<string, unknown>[],
+      minutesRaw: [] as Record<string, unknown>[],
+      lettersRaw: [] as Record<string, unknown>[],
+      announcementsRaw: [] as Record<string, unknown>[],
+      inquiriesRaw: [] as Record<string, unknown>[],
+      tasksRaw: [] as Record<string, unknown>[],
+      bylawsRaw: [] as Record<string, unknown>[],
+      auditLogsRaw: [] as Record<string, unknown>[],
+    };
+
+    const ready = {
+      config: false,
+      members: false,
+      users: false,
+      payments: false,
+      announcements: false,
+      auditLogs: false,
+    };
+
+    const emitIfReady = () => {
+      if (disposed) return;
+      if (
+        !ready.config ||
+        !ready.members ||
+        !ready.users ||
+        !ready.payments ||
+        !ready.announcements ||
+        !ready.auditLogs
+      ) {
+        return;
+      }
+      const assembled = this.assembleDatabase(state);
+      if (assembled.users.length === 0) return;
+      this.lastCloudDb = assembled;
+      this.inMemoryDb = assembled;
+      onUpdate(assembled);
+    };
+
+    const handleSnapError = (err: unknown, op: OperationType, path: string) => {
+      try {
+        handleFirestoreError(err, op, path);
+      } catch (formatted) {
+        if (!disposed) {
+          onError(formatted);
+        }
+      }
+    };
+
+    const unsubscribers: Unsubscribe[] = [];
+
+    unsubscribers.push(
+      onSnapshot(
+        doc(firestoreDb, COLLECTIONS.config, 'main'),
+        (snap) => {
+          ready.config = true;
+          this.cloudConfigExists = snap.exists();
+          if (snap.exists()) {
+            state.configData = snap.data() as Record<string, unknown>;
+          }
+          emitIfReady();
+        },
+        (err) => handleSnapError(err, OperationType.GET, `${COLLECTIONS.config}/main`)
+      )
+    );
+
+    const watchCollection = (
+      colName: string,
+      apply: (docs: Record<string, unknown>[]) => void,
+      readyKey?: keyof typeof ready
+    ) => {
+      unsubscribers.push(
+        onSnapshot(
+          collection(firestoreDb, colName),
+          (snap) => {
+            apply(snap.docs.map((d) => d.data() as Record<string, unknown>));
+            if (readyKey) ready[readyKey] = true;
+            emitIfReady();
+          },
+          (err) => handleSnapError(err, OperationType.LIST, colName)
+        )
+      );
+    };
+
+    watchCollection(COLLECTIONS.members, (docs) => (state.membersRaw = docs), 'members');
+    watchCollection(COLLECTIONS.users, (docs) => (state.usersRaw = docs), 'users');
+    watchCollection(COLLECTIONS.payments, (docs) => (state.paymentsRaw = docs), 'payments');
+    watchCollection(COLLECTIONS.announcements, (docs) => (state.announcementsRaw = docs), 'announcements');
+    watchCollection(COLLECTIONS.auditLogs, (docs) => (state.auditLogsRaw = docs), 'auditLogs');
+    watchCollection(COLLECTIONS.journalEntries, (docs) => (state.journalsRaw = docs));
+    watchCollection(COLLECTIONS.minutes, (docs) => (state.minutesRaw = docs));
+    watchCollection(COLLECTIONS.letters, (docs) => (state.lettersRaw = docs));
+    watchCollection(COLLECTIONS.inquiries, (docs) => (state.inquiriesRaw = docs));
+    watchCollection(COLLECTIONS.tasks, (docs) => (state.tasksRaw = docs));
+    watchCollection(COLLECTIONS.bylaws, (docs) => (state.bylawsRaw = docs));
+
+    return () => {
+      disposed = true;
+      unsubscribers.forEach((unsub) => unsub());
+    };
+  }
+
   async save(data: IddirDatabase): Promise<void> {
-    this.writeLocalCache(data);
+    this.inMemoryDb = data;
     if (this.isCloudConnected()) {
       await this.pushDiffToFirestore(data);
     }
@@ -1336,11 +1782,11 @@ class FirestoreIddirProvider implements IddirDataProvider {
           ...this.lastCloudDb.auditLogs,
         ].slice(0, 400),
       };
-      this.writeLocalCache(resetWithExistingAudits);
+      this.inMemoryDb = resetWithExistingAudits;
       await this.pushDiffToFirestore(resetWithExistingAudits);
       return resetWithExistingAudits;
     }
-    this.writeLocalCache(seeded);
+    this.inMemoryDb = seeded;
     return seeded;
   }
 }
