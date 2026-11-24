@@ -3,17 +3,20 @@ import {
   BookOpen,
   Calendar,
   CheckCircle2,
+  Cloud,
   CreditCard,
   IdCard,
   LayoutDashboard,
   Lock,
   LogOut,
   Megaphone,
+  RefreshCw,
   ShieldCheck,
   User as UserIcon,
   Users,
   XCircle,
 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
 import type {
   AnnouncementNotice,
   AppTab,
@@ -67,6 +70,11 @@ import {
   upsertBylawRule,
   upsertMemberByAdmin,
 } from './services/iddirStore';
+import {
+  signInWithFirebaseGoogle,
+  signOutFirebase,
+  subscribeFirebaseAuth,
+} from './firebase';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ConfirmModal } from './components/ConfirmModal';
 import { DigitalIdCardModal } from './components/DigitalIdCardModal';
@@ -145,6 +153,8 @@ function MainApp() {
   const [loadingDb, setLoadingDb] = useState(true);
   const [session, setSession] = useState<AuthSession | null>(null);
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [syncingCloud, setSyncingCloud] = useState(false);
 
   // Minimal Login Form State
   const [loginUsername, setLoginUsername] = useState('');
@@ -171,6 +181,17 @@ function MainApp() {
     onConfirm: () => {},
   });
 
+  function formatCloudErrorMessage(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    if (raw.includes('Quota exceeded')) {
+      return 'የFirebase Firestore ዕለታዊ የነጻ መጠን (Quota) ገደብ ተሞልቷል። እባክዎ ነገ ይሞክሩ ወይም የክፍያ እቅዱን ያሻሽሉ።';
+    }
+    if (raw.includes('PERMISSION_DENIED') || raw.includes('Missing or insufficient permissions')) {
+      return 'የFirebase ደመና ፈቃድ አልተገኘም። እባክዎ በአድሚን ኢሜይል (Misganalead28@gmail.com) ይግቡ።';
+    }
+    return 'ከFirebase ጋር ማመሳሰል አልተቻለም። የአካባቢ መረጃ ተጠብቋል።';
+  }
+
   useEffect(() => {
     let mounted = true;
     iddirProvider
@@ -184,8 +205,25 @@ function MainApp() {
       .catch(() => {
         if (mounted) setLoadingDb(false);
       });
+
+    const unsubscribeAuth = subscribeFirebaseAuth((user) => {
+      if (!mounted) return;
+      setFirebaseUser(user);
+      if (user && user.emailVerified) {
+        iddirProvider
+          .syncFromCloud()
+          .then(({ db: syncedDb }) => {
+            if (mounted) setDb(syncedDb);
+          })
+          .catch(() => {
+            // Keep cached DB accessible if cloud email isn't authorized
+          });
+      }
+    });
+
     return () => {
       mounted = false;
+      unsubscribeAuth();
     };
   }, []);
 
@@ -199,10 +237,41 @@ function MainApp() {
 
   async function commitDb(nextDb: IddirDatabase, successMessage?: string) {
     setDb(nextDb);
-    await iddirProvider.save(nextDb);
-    if (successMessage) {
-      pushToast('success', successMessage);
+    try {
+      await iddirProvider.save(nextDb);
+      if (successMessage) {
+        pushToast('success', successMessage);
+      }
+    } catch (err) {
+      pushToast('error', formatCloudErrorMessage(err));
     }
+  }
+
+  async function handleConnectCloudSync() {
+    if (syncingCloud) return;
+    setSyncingCloud(true);
+    try {
+      const user = firebaseUser ?? (await signInWithFirebaseGoogle());
+      setFirebaseUser(user);
+      const { db: syncedDb, seededCloud } = await iddirProvider.syncFromCloud(db ?? undefined);
+      setDb(syncedDb);
+      pushToast(
+        'success',
+        seededCloud
+          ? 'የዕድሩ መረጃ ወደ Firebase Firestore በተሳካ ሁኔታ ተልኮ ተገናኝቷል።'
+          : 'ከFirebase Firestore ጋር በተሳካ ሁኔታ ተመሳስሏል።'
+      );
+    } catch (err) {
+      pushToast('error', formatCloudErrorMessage(err));
+    } finally {
+      setSyncingCloud(false);
+    }
+  }
+
+  async function handleDisconnectCloudSync() {
+    await signOutFirebase();
+    setFirebaseUser(null);
+    pushToast('info', 'የFirebase ደመና ግንኙነት ተቋርጧል።');
   }
 
   function runGuarded(fn: (currentDb: IddirDatabase, currentSession: AuthSession) => {
@@ -405,6 +474,40 @@ function MainApp() {
                 {ROLE_LABELS_AM[session.role]}
               </p>
             </div>
+
+            {session.role === 'admin' &&
+              (firebaseUser ? (
+                <div className="inline-flex items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={syncingCloud}
+                    onClick={handleConnectCloudSync}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-[#14532D]/30 bg-[#F0FDF4] text-[#14532D] rounded-lg hover:bg-[#DCFCE7] disabled:opacity-60"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
+                    <span className="hidden md:inline">Firebase አምሳስል</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectCloudSync}
+                    className="px-2 py-1.5 text-[11px] font-medium text-[#4B5563] hover:text-[#111815] border border-[#D1D5DB] rounded-lg bg-white"
+                  >
+                    አቋርጥ
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={syncingCloud}
+                  onClick={handleConnectCloudSync}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-[#14532D]/40 bg-white text-[#14532D] rounded-lg hover:bg-[#F0FDF4] disabled:opacity-60"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">
+                    {syncingCloud ? 'በመገናኘት ላይ...' : 'Firebase አገናኝ'}
+                  </span>
+                </button>
+              ))}
 
             {ownMember && (
               <button

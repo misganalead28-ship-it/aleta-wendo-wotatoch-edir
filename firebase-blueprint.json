@@ -1,402 +1,363 @@
 {
   "entities": {
-    "MemberProfile": {
-      "title": "MemberProfile",
-      "description": "Private member profile including PII, guarantor details, role, and membership status for Aleta Wendo Youth Mutual Aid Association.",
+    "IddirConfig": {
+      "title": "IddirConfig",
+      "description": "Global association settings for Aleta Wendo Youth Mutual Aid Association.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "associationName": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "monthlyDuesAmount": { "type": "number" },
+        "latePenaltyAmount": { "type": "number" },
+        "version": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["associationName", "monthlyDuesAmount", "latePenaltyAmount", "version", "createdAt", "updatedAt"]
+    },
+    "IddirMember": {
+      "title": "IddirMember",
+      "description": "Registered Iddir member profile including dependents, guarantor, and status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "memberCode": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Z0-9\\-]+$" },
         "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "fullNameAm": { "type": "string", "minLength": 0, "maxLength": 100 },
-        "email": { "type": "string", "format": "email", "maxLength": 120 },
         "phone": { "type": "string", "minLength": 5, "maxLength": 30 },
-        "address": { "type": "string", "minLength": 2, "maxLength": 200 },
-        "photoUrl": { "type": "string", "maxLength": 350000 },
+        "subCity": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "kebele": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "addressNote": { "type": "string", "maxLength": 200 },
         "joinDate": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "status": { "type": "string", "enum": ["pending", "active", "suspended", "terminated"] },
-        "role": { "type": "string", "enum": ["chairperson", "secretary", "treasurer", "auditor", "committee_member", "member"] },
-        "guarantorName": { "type": "string", "maxLength": 100 },
-        "guarantorMemberCode": { "type": "string", "maxLength": 32 },
-        "guarantorPhone": { "type": "string", "maxLength": 30 },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "photoUrl": { "type": "string", "maxLength": 350000 },
         "monthlyDuesRate": { "type": "number" },
-        "inviteId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "guarantorName": { "type": "string", "maxLength": 100 },
+        "dependents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "maxLength": 64 },
+              "fullName": { "type": "string", "maxLength": 100 },
+              "relationship": { "type": "string", "enum": ["spouse", "child", "parent", "other"] },
+              "age": { "type": "number" }
+            }
+          }
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "uid", "memberCode", "fullName", "email", "phone", "address",
-        "joinDate", "status", "role", "monthlyDuesRate", "createdAt", "updatedAt"
+        "id", "memberCode", "fullName", "phone", "subCity", "kebele",
+        "joinDate", "status", "monthlyDuesRate", "dependents", "createdAt", "updatedAt"
       ]
     },
-    "MemberPublic": {
-      "title": "MemberPublic",
-      "description": "Non-PII directory record for member verification, officer roster, and digital ID validation.",
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Admin-provisioned user credentials and 9-role RBAC assignments.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "memberCode": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Z0-9\\-]+$" },
-        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "fullNameAm": { "type": "string", "maxLength": 100 },
-        "role": { "type": "string", "enum": ["chairperson", "secretary", "treasurer", "auditor", "committee_member", "member"] },
-        "status": { "type": "string", "enum": ["pending", "active", "suspended", "terminated"] },
-        "photoUrl": { "type": "string", "maxLength": 350000 },
-        "joinDate": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "inviteId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 3, "maxLength": 60, "pattern": "^[a-z0-9_.\\-]+$" },
+        "passwordSalt": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "passwordHash": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "chairperson", "vice_chairperson", "treasurer", "secretary", "auditor", "public_relations", "committee_member", "member"]
+        },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "active": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["uid", "memberCode", "fullName", "role", "status", "joinDate", "visibility", "createdAt", "updatedAt"]
+      "required": ["id", "username", "passwordSalt", "passwordHash", "role", "displayName", "active", "createdAt", "updatedAt"]
     },
-    "MemberInvite": {
-      "title": "MemberInvite",
-      "description": "Pre-registered member invitation allowing individual members to claim their own login account with assigned role and profile.",
+    "ContributionRecord": {
+      "title": "ContributionRecord",
+      "description": "Member dues, bereavement, or penalty contribution with receipt image and authorization status.",
       "type": "object",
       "properties": {
-        "email": { "type": "string", "format": "email", "maxLength": 120 },
-        "memberCode": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Z0-9\\-]+$" },
-        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "fullNameAm": { "type": "string", "maxLength": 100 },
-        "phone": { "type": "string", "minLength": 5, "maxLength": 30 },
-        "address": { "type": "string", "minLength": 2, "maxLength": 200 },
-        "photoUrl": { "type": "string", "maxLength": 350000 },
-        "joinDate": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "status": { "type": "string", "enum": ["pending", "active", "suspended", "terminated"] },
-        "role": { "type": "string", "enum": ["chairperson", "secretary", "treasurer", "auditor", "committee_member", "member"] },
-        "guarantorName": { "type": "string", "maxLength": 100 },
-        "guarantorMemberCode": { "type": "string", "maxLength": 32 },
-        "guarantorPhone": { "type": "string", "maxLength": 30 },
-        "monthlyDuesRate": { "type": "number" },
-        "invitedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "claimed": { "type": "boolean" },
-        "claimedByUid": { "type": "string", "maxLength": 128 },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": [
-        "email", "memberCode", "fullName", "phone", "address",
-        "joinDate", "status", "role", "monthlyDuesRate", "invitedByUid",
-        "claimed", "createdAt", "updatedAt"
-      ]
-    },
-    "Dependent": {
-      "title": "Dependent",
-      "description": "Covered family dependent or beneficiary linked to a member.",
-      "type": "object",
-      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "receiptNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
         "memberId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "relationship": { "type": "string", "enum": ["spouse", "child", "parent", "sibling", "other"] },
-        "age": { "type": "number" },
-        "idNumber": { "type": "string", "maxLength": 50 },
-        "covered": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["memberId", "uid", "fullName", "relationship", "age", "covered", "createdAt", "updatedAt"]
-    },
-    "Contribution": {
-      "title": "Contribution",
-      "description": "Monthly dues, bereavement assessment, or penalty payment with receipt attachment and treasurer authorization.",
-      "type": "object",
-      "properties": {
-        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "memberCode": { "type": "string", "minLength": 3, "maxLength": 32 },
         "memberName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "type": { "type": "string", "enum": ["monthly", "bereavement", "penalty", "registration"] },
+        "monthKey": { "type": "string", "minLength": 7, "maxLength": 10 },
         "periodLabel": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "type": { "type": "string", "enum": ["monthly", "bereavement", "penalty", "registration"] },
         "amount": { "type": "number" },
-        "penaltyAmount": { "type": "number" },
-        "totalAmount": { "type": "number" },
         "paymentMethod": { "type": "string", "enum": ["telebirr", "bank_transfer", "cash"] },
-        "transactionRef": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "bankName": { "type": "string", "maxLength": 100 },
+        "referenceCode": { "type": "string", "minLength": 1, "maxLength": 80 },
         "receiptImageUrl": { "type": "string", "maxLength": 450000 },
         "notes": { "type": "string", "maxLength": 500 },
-        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
-        "reviewedByUid": { "type": "string", "maxLength": 128 },
-        "reviewedByName": { "type": "string", "maxLength": 100 },
+        "submittedByMember": { "type": "boolean" },
+        "authorizationStatus": { "type": "string", "enum": ["pending", "authorized", "rejected"] },
+        "authorizedByUid": { "type": "string", "maxLength": 128 },
+        "authorizedByName": { "type": "string", "maxLength": 100 },
+        "authorizedAt": { "type": "string", "maxLength": 64 },
         "rejectionReason": { "type": "string", "maxLength": 300 },
-        "reconciled": { "type": "boolean" },
-        "bankStatementRef": { "type": "string", "maxLength": 80 },
+        "recordedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordedByName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "recordedAt": { "type": "string", "minLength": 4, "maxLength": 64 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "memberUid", "memberCode", "memberName", "type", "periodLabel",
-        "amount", "penaltyAmount", "totalAmount", "paymentMethod", "transactionRef",
-        "status", "reconciled", "createdAt", "updatedAt"
+        "id", "receiptNumber", "memberId", "memberCode", "memberName", "monthKey", "periodLabel",
+        "type", "amount", "paymentMethod", "referenceCode", "authorizationStatus",
+        "recordedByUid", "recordedByName", "recordedAt", "createdAt", "updatedAt"
       ]
     },
-    "BenefitClaim": {
-      "title": "BenefitClaim",
-      "description": "Member benefit request and committee approval/disbursement record.",
+    "ExpenseRecord": {
+      "title": "ExpenseRecord",
+      "description": "Iddir disbursement, bereavement aid, or equipment expense voucher.",
       "type": "object",
       "properties": {
-        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "memberCode": { "type": "string", "minLength": 3, "maxLength": 32 },
-        "memberName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "category": { "type": "string", "enum": ["bereavement", "wedding", "medical", "emergency"] },
-        "title": { "type": "string", "minLength": 3, "maxLength": 150 },
-        "description": { "type": "string", "minLength": 5, "maxLength": 1000 },
-        "beneficiaryName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "requestedAmount": { "type": "number" },
-        "approvedAmount": { "type": "number" },
-        "supportingDocUrl": { "type": "string", "maxLength": 450000 },
-        "status": { "type": "string", "enum": ["submitted", "under_review", "approved", "disbursed", "rejected"] },
-        "reviewedByUid": { "type": "string", "maxLength": 128 },
-        "reviewedByName": { "type": "string", "maxLength": 100 },
-        "reviewNotes": { "type": "string", "maxLength": 500 },
-        "disbursedRef": { "type": "string", "maxLength": 80 },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": [
-        "memberUid", "memberCode", "memberName", "category", "title",
-        "description", "beneficiaryName", "requestedAmount", "approvedAmount",
-        "status", "createdAt", "updatedAt"
-      ]
-    },
-    "AssociationAsset": {
-      "title": "AssociationAsset",
-      "description": "Shared physical assets (tents, chairs, cooking pots) and checkout tracking.",
-      "type": "object",
-      "properties": {
-        "assetCode": { "type": "string", "minLength": 2, "maxLength": 32 },
-        "name": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "nameAm": { "type": "string", "maxLength": 100 },
-        "category": { "type": "string", "enum": ["tent", "chairs", "cookware", "electronics", "other"] },
-        "totalQuantity": { "type": "number" },
-        "availableQuantity": { "type": "number" },
-        "condition": { "type": "string", "enum": ["good", "fair", "needs_repair"] },
-        "borrowedByMemberCode": { "type": "string", "maxLength": 32 },
-        "borrowedByName": { "type": "string", "maxLength": 100 },
-        "dueDate": { "type": "string", "maxLength": 32 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["assetCode", "name", "category", "totalQuantity", "availableQuantity", "condition", "visibility", "createdAt", "updatedAt"]
-    },
-    "LedgerEntry": {
-      "title": "LedgerEntry",
-      "description": "Income and expense ledger transaction with bank reconciliation state.",
-      "type": "object",
-      "properties": {
-        "entryType": { "type": "string", "enum": ["income", "expense"] },
-        "category": { "type": "string", "minLength": 2, "maxLength": 64 },
-        "description": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "voucherNumber": { "type": "string", "minLength": 3, "maxLength": 40 },
+        "category": { "type": "string", "enum": ["bereavement_aid", "medical_aid", "wedding_gift", "operations", "equipment"] },
+        "title": { "type": "string", "minLength": 2, "maxLength": 150 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "beneficiaryName": { "type": "string", "maxLength": 100 },
         "amount": { "type": "number" },
         "paymentMethod": { "type": "string", "enum": ["telebirr", "bank_transfer", "cash"] },
         "referenceCode": { "type": "string", "maxLength": 80 },
-        "reconciled": { "type": "boolean" },
-        "bankStatementRef": { "type": "string", "maxLength": 80 },
-        "recordedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "approvedByName": { "type": "string", "maxLength": 100 },
+        "recordedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "recordedByName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "entryDate": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "visibility": { "type": "string", "enum": ["members"] },
+        "expenseDate": { "type": "string", "minLength": 4, "maxLength": 32 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "entryType", "category", "description", "amount", "paymentMethod",
-        "reconciled", "recordedByUid", "recordedByName", "entryDate", "visibility", "createdAt", "updatedAt"
+        "id", "voucherNumber", "category", "title", "description", "amount",
+        "paymentMethod", "approvalStatus", "recordedByUid", "recordedByName", "expenseDate", "createdAt", "updatedAt"
       ]
     },
-    "Announcement": {
-      "title": "Announcement",
-      "description": "Urgent bereavement alerts, payment reminders, and association communications.",
+    "JournalEntry": {
+      "title": "JournalEntry",
+      "description": "Manual double-entry accounting journal entry.",
       "type": "object",
       "properties": {
-        "title": { "type": "string", "minLength": 2, "maxLength": 150 },
-        "titleAm": { "type": "string", "maxLength": 150 },
-        "message": { "type": "string", "minLength": 5, "maxLength": 2000 },
-        "messageAm": { "type": "string", "maxLength": 2000 },
-        "priority": { "type": "string", "enum": ["urgent", "reminder", "general"] },
-        "channel": { "type": "string", "enum": ["app_sms", "in_app"] },
-        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "authorName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["title", "message", "priority", "channel", "authorUid", "authorName", "visibility", "createdAt", "updatedAt"]
-    },
-    "Meeting": {
-      "title": "Meeting",
-      "description": "Scheduled association meeting with agenda, online/in-person location, and official minutes.",
-      "type": "object",
-      "properties": {
-        "title": { "type": "string", "minLength": 3, "maxLength": 150 },
-        "titleAm": { "type": "string", "maxLength": 150 },
-        "meetingType": { "type": "string", "enum": ["regular", "emergency", "general_assembly"] },
-        "scheduledDate": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "scheduledTime": { "type": "string", "minLength": 2, "maxLength": 32 },
-        "location": { "type": "string", "minLength": 2, "maxLength": 200 },
-        "onlineLink": { "type": "string", "maxLength": 300 },
-        "agenda": { "type": "string", "minLength": 3, "maxLength": 2000 },
-        "agendaAm": { "type": "string", "maxLength": 2000 },
-        "minutes": { "type": "string", "maxLength": 8000 },
-        "minutesAm": { "type": "string", "maxLength": 8000 },
-        "resolutions": { "type": "string", "maxLength": 2000 },
-        "status": { "type": "string", "enum": ["scheduled", "in_progress", "completed"] },
-        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entryNumber": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "date": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "sourceType": { "type": "string", "enum": ["contribution", "expense", "manual"] },
+        "sourceId": { "type": "string", "maxLength": 128 },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "accountCode": { "type": "string", "maxLength": 16 },
+              "accountNameAm": { "type": "string", "maxLength": 120 },
+              "debit": { "type": "number" },
+              "credit": { "type": "number" }
+            }
+          }
+        },
         "createdByName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "visibility": { "type": "string", "enum": ["members"] },
+        "authorizedByName": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "entryNumber", "date", "reference", "description", "sourceType", "lines", "createdByName", "createdAt", "updatedAt"]
+    },
+    "MeetingMinute": {
+      "title": "MeetingMinute",
+      "description": "Committee or general assembly meeting minutes and resolutions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "meetingNumber": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "meetingDate": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "location": { "type": "string", "minLength": 2, "maxLength": 150 },
+        "attendeesCount": { "type": "number" },
+        "agenda": { "type": "string", "minLength": 2, "maxLength": 2000 },
+        "minutesBody": { "type": "string", "minLength": 2, "maxLength": 8000 },
+        "decisions": { "type": "string", "maxLength": 4000 },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "approvedByName": { "type": "string", "maxLength": 100 },
+        "recordedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordedByName": { "type": "string", "minLength": 2, "maxLength": 100 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
-        "title", "meetingType", "scheduledDate", "scheduledTime", "location",
-        "agenda", "status", "createdByUid", "createdByName", "visibility", "createdAt", "updatedAt"
+        "id", "meetingNumber", "title", "meetingDate", "location", "attendeesCount",
+        "agenda", "minutesBody", "decisions", "approvalStatus", "recordedByUid", "recordedByName", "createdAt", "updatedAt"
       ]
     },
-    "MeetingAttendance": {
-      "title": "MeetingAttendance",
-      "description": "Member RSVP and check-in mode (in-person, online, or apology) for a meeting.",
+    "OfficialLetter": {
+      "title": "OfficialLetter",
+      "description": "Official correspondence issued by the Secretary.",
       "type": "object",
       "properties": {
-        "meetingId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "memberCode": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "letterNumber": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "recipient": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "body": { "type": "string", "minLength": 2, "maxLength": 6000 },
+        "issueDate": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "memberId": { "type": "string", "maxLength": 128 },
+        "issuedByName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "letterNumber", "recipient", "subject", "body", "issueDate", "issuedByName", "createdAt", "updatedAt"]
+    },
+    "AnnouncementNotice": {
+      "title": "AnnouncementNotice",
+      "description": "Community announcements (bereavement, joy, urgent, general).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "enum": ["bereavement", "joy", "urgent", "general"] },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 2000 },
+        "eventDate": { "type": "string", "maxLength": 32 },
+        "location": { "type": "string", "maxLength": 150 },
+        "approvalStatus": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "authorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authorName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "authorRole": {
+          "type": "string",
+          "enum": ["admin", "chairperson", "vice_chairperson", "treasurer", "secretary", "auditor", "public_relations", "committee_member", "member"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "category", "title", "message", "approvalStatus", "authorUid", "authorName", "authorRole", "createdAt", "updatedAt"]
+    },
+    "MemberInquiry": {
+      "title": "MemberInquiry",
+      "description": "Member question submitted to Public Relations and official response.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "memberId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "memberName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "mode": { "type": "string", "enum": ["in_person", "online", "apology"] },
-        "note": { "type": "string", "maxLength": 250 },
-        "visibility": { "type": "string", "enum": ["members"] },
+        "memberCode": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "subject": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 2000 },
+        "responseText": { "type": "string", "maxLength": 2000 },
+        "respondedByName": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["open", "responded"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["meetingId", "uid", "memberCode", "memberName", "mode", "visibility", "createdAt", "updatedAt"]
+      "required": ["id", "memberId", "memberName", "memberCode", "subject", "message", "status", "createdAt", "updatedAt"]
     },
-    "BylawArticle": {
-      "title": "BylawArticle",
-      "description": "Association bylaw article readable by all members.",
+    "CommitteeTask": {
+      "title": "CommitteeTask",
+      "description": "Committee coordination task and execution status.",
       "type": "object",
       "properties": {
-        "articleNumber": { "type": "string", "minLength": 1, "maxLength": 20 },
-        "title": { "type": "string", "minLength": 2, "maxLength": 150 },
-        "titleAm": { "type": "string", "maxLength": 150 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "assignedRole": { "type": "string", "enum": ["committee_member"] },
+        "assignedToName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "dueDate": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "status": { "type": "string", "enum": ["todo", "in_progress", "done"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "description", "assignedRole", "assignedToName", "dueDate", "status", "createdAt", "updatedAt"]
+    },
+    "BylawRule": {
+      "title": "BylawRule",
+      "description": "Iddir bylaw article and rule text.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "articleNumber": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 200 },
         "content": { "type": "string", "minLength": 5, "maxLength": 5000 },
-        "contentAm": { "type": "string", "maxLength": 5000 },
-        "category": { "type": "string", "minLength": 2, "maxLength": 64 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["articleNumber", "title", "content", "category", "visibility", "updatedByUid", "createdAt", "updatedAt"]
+      "required": ["id", "articleNumber", "title", "content", "createdAt", "updatedAt"]
     },
-    "Poll": {
-      "title": "Poll",
-      "description": "Digital committee election or agenda resolution ballot.",
+    "AuditTrailEntry": {
+      "title": "AuditTrailEntry",
+      "description": "Append-only immutable audit trail log entry.",
       "type": "object",
       "properties": {
-        "title": { "type": "string", "minLength": 3, "maxLength": 150 },
-        "titleAm": { "type": "string", "maxLength": 150 },
-        "description": { "type": "string", "minLength": 3, "maxLength": 1000 },
-        "descriptionAm": { "type": "string", "maxLength": 1000 },
-        "options": { "type": "array", "maxLength": 6 },
-        "status": { "type": "string", "enum": ["open", "closed"] },
-        "closesAt": { "type": "string", "minLength": 4, "maxLength": 32 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["title", "description", "options", "status", "closesAt", "visibility", "createdByUid", "createdAt", "updatedAt"]
-    },
-    "PollVote": {
-      "title": "PollVote",
-      "description": "Single verifiable member ballot inside a poll.",
-      "type": "object",
-      "properties": {
-        "pollId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "memberCode": { "type": "string", "minLength": 3, "maxLength": 32 },
-        "selectedOption": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "visibility": { "type": "string", "enum": ["members"] },
-        "createdAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["pollId", "uid", "memberCode", "selectedOption", "visibility", "createdAt"]
-    },
-    "AuditLog": {
-      "title": "AuditLog",
-      "description": "Immutable audit trail recording sensitive administrative, financial, and governance actions.",
-      "type": "object",
-      "properties": {
-        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorUsername": { "type": "string", "minLength": 1, "maxLength": 60 },
         "actorName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "actorRole": { "type": "string", "enum": ["chairperson", "secretary", "treasurer", "auditor", "committee_member", "member"] },
-        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
-        "targetCollection": { "type": "string", "minLength": 2, "maxLength": 64 },
-        "targetId": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "summary": { "type": "string", "minLength": 3, "maxLength": 500 },
+        "actorRole": {
+          "type": "string",
+          "enum": ["admin", "chairperson", "vice_chairperson", "treasurer", "secretary", "auditor", "public_relations", "committee_member", "member"]
+        },
+        "action": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "targetType": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "summary": { "type": "string", "minLength": 2, "maxLength": 500 },
+        "timestamp": { "type": "string", "minLength": 4, "maxLength": 64 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["actorUid", "actorName", "actorRole", "action", "targetCollection", "targetId", "summary", "createdAt"]
+      "required": ["id", "actorUid", "actorUsername", "actorName", "actorRole", "action", "targetType", "summary", "timestamp", "createdAt"]
     }
   },
   "firestore": {
-    "/members/{memberId}": {
-      "schema": { "$ref": "#/entities/MemberProfile" },
-      "description": "Private member profile documents containing PII, guarantor info, and role."
+    "/iddir_config/{configId}": {
+      "schema": { "$ref": "#/entities/IddirConfig" },
+      "description": "Association global settings document."
     },
-    "/members/{memberId}/dependents/{dependentId}": {
-      "schema": { "$ref": "#/entities/Dependent" },
-      "description": "Covered family dependents and beneficiaries under a member profile."
+    "/iddir_members/{memberId}": {
+      "schema": { "$ref": "#/entities/IddirMember" },
+      "description": "Registered Iddir members and covered dependents."
     },
-    "/members_public/{memberId}": {
-      "schema": { "$ref": "#/entities/MemberPublic" },
-      "description": "Non-PII directory records for guarantor lookup, officer roster, and digital ID verification."
+    "/iddir_accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Admin-managed credentials and 9-role assignments."
     },
-    "/member_invites/{inviteId}": {
-      "schema": { "$ref": "#/entities/MemberInvite" },
-      "description": "Pre-registered member invitations keyed by normalized email for individual user account claiming."
+    "/iddir_contributions/{contributionId}": {
+      "schema": { "$ref": "#/entities/ContributionRecord" },
+      "description": "Monthly dues, bereavement contributions, penalties, and bank receipt submissions."
     },
-    "/contributions/{contributionId}": {
-      "schema": { "$ref": "#/entities/Contribution" },
-      "description": "Monthly dues, bereavement assessments, penalties, receipt attachments, and treasurer approvals."
+    "/iddir_expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseRecord" },
+      "description": "Disbursement requests and approved expense vouchers."
     },
-    "/claims/{claimId}": {
-      "schema": { "$ref": "#/entities/BenefitClaim" },
-      "description": "Bereavement, wedding, medical, and emergency benefit claims and disbursements."
+    "/iddir_journal_entries/{entryId}": {
+      "schema": { "$ref": "#/entities/JournalEntry" },
+      "description": "Manual double-entry accounting journal adjustments."
     },
-    "/assets/{assetId}": {
-      "schema": { "$ref": "#/entities/AssociationAsset" },
-      "description": "Association physical assets and checkout tracking."
+    "/iddir_minutes/{minuteId}": {
+      "schema": { "$ref": "#/entities/MeetingMinute" },
+      "description": "Meeting minutes and committee resolutions."
     },
-    "/ledger/{entryId}": {
-      "schema": { "$ref": "#/entities/LedgerEntry" },
-      "description": "Association income/expense ledger and bank reconciliation records."
+    "/iddir_letters/{letterId}": {
+      "schema": { "$ref": "#/entities/OfficialLetter" },
+      "description": "Official letters issued by the Secretary."
     },
-    "/announcements/{announcementId}": {
-      "schema": { "$ref": "#/entities/Announcement" },
-      "description": "Urgent bereavement alerts, payment reminders, and general notices."
+    "/iddir_announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/AnnouncementNotice" },
+      "description": "Public notices and community alerts."
     },
-    "/meetings/{meetingId}": {
-      "schema": { "$ref": "#/entities/Meeting" },
-      "description": "Association meeting calls, agendas, and official minutes."
+    "/iddir_inquiries/{inquiryId}": {
+      "schema": { "$ref": "#/entities/MemberInquiry" },
+      "description": "Member inquiries and Public Relations responses."
     },
-    "/meetings/{meetingId}/attendance/{uid}": {
-      "schema": { "$ref": "#/entities/MeetingAttendance" },
-      "description": "Member attendance confirmations (in-person, online, apology) for a meeting."
+    "/iddir_tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/CommitteeTask" },
+      "description": "Committee member tasks."
     },
-    "/bylaws/{articleId}": {
-      "schema": { "$ref": "#/entities/BylawArticle" },
-      "description": "Association constitution and bylaws articles."
+    "/iddir_bylaws/{bylawId}": {
+      "schema": { "$ref": "#/entities/BylawRule" },
+      "description": "Iddir bylaw articles."
     },
-    "/polls/{pollId}": {
-      "schema": { "$ref": "#/entities/Poll" },
-      "description": "Digital elections and agenda resolution polls."
-    },
-    "/polls/{pollId}/votes/{uid}": {
-      "schema": { "$ref": "#/entities/PollVote" },
-      "description": "Individual member votes (one document per member UID per poll)."
-    },
-    "/audit_logs/{logId}": {
-      "schema": { "$ref": "#/entities/AuditLog" },
-      "description": "Immutable audit trail for governance and financial changes."
+    "/iddir_audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditTrailEntry" },
+      "description": "Immutable append-only audit trail."
     }
   }
 }

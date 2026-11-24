@@ -8,20 +8,23 @@ export const ID_PATTERN = /^[a-zA-Z0-9_\-]+$/;
 export const MEMBER_CODE_PATTERN = /^[A-Z0-9\-]+$/;
 
 export const LIMITS = {
-  memberCodeMax: blueprint.entities.MemberProfile.properties.memberCode.maxLength ?? 32,
-  fullNameMax: blueprint.entities.MemberProfile.properties.fullName.maxLength ?? 100,
-  phoneMax: blueprint.entities.MemberProfile.properties.phone.maxLength ?? 30,
-  addressMax: blueprint.entities.MemberProfile.properties.address.maxLength ?? 200,
-  photoUrlMax: blueprint.entities.MemberProfile.properties.photoUrl.maxLength ?? 350000,
-  receiptUrlMax: blueprint.entities.Contribution.properties.receiptImageUrl.maxLength ?? 450000,
-  notesMax: blueprint.entities.Contribution.properties.notes.maxLength ?? 500,
-  transactionRefMax: blueprint.entities.Contribution.properties.transactionRef.maxLength ?? 80,
-  claimTitleMax: blueprint.entities.BenefitClaim.properties.title.maxLength ?? 150,
-  claimDescMax: blueprint.entities.BenefitClaim.properties.description.maxLength ?? 1000,
-  minutesMax: blueprint.entities.Meeting.properties.minutes.maxLength ?? 8000,
-  announcementMax: blueprint.entities.Announcement.properties.message.maxLength ?? 2000,
-  bylawContentMax: blueprint.entities.BylawArticle.properties.content.maxLength ?? 5000,
-  auditSummaryMax: blueprint.entities.AuditLog.properties.summary.maxLength ?? 500,
+  memberCodeMax: blueprint.entities.IddirMember.properties.memberCode.maxLength ?? 32,
+  fullNameMax: blueprint.entities.IddirMember.properties.fullName.maxLength ?? 100,
+  phoneMax: blueprint.entities.IddirMember.properties.phone.maxLength ?? 30,
+  subCityMax: blueprint.entities.IddirMember.properties.subCity.maxLength ?? 80,
+  kebeleMax: blueprint.entities.IddirMember.properties.kebele.maxLength ?? 60,
+  addressMax: blueprint.entities.IddirMember.properties.addressNote.maxLength ?? 200,
+  photoUrlMax: blueprint.entities.IddirMember.properties.photoUrl.maxLength ?? 350000,
+  guarantorMax: blueprint.entities.IddirMember.properties.guarantorName.maxLength ?? 100,
+  receiptUrlMax: blueprint.entities.ContributionRecord.properties.receiptImageUrl.maxLength ?? 450000,
+  notesMax: blueprint.entities.ContributionRecord.properties.notes.maxLength ?? 500,
+  transactionRefMax: blueprint.entities.ContributionRecord.properties.referenceCode.maxLength ?? 80,
+  expenseTitleMax: blueprint.entities.ExpenseRecord.properties.title.maxLength ?? 150,
+  expenseDescMax: blueprint.entities.ExpenseRecord.properties.description.maxLength ?? 1000,
+  minutesMax: blueprint.entities.MeetingMinute.properties.minutesBody.maxLength ?? 8000,
+  announcementMax: blueprint.entities.AnnouncementNotice.properties.message.maxLength ?? 2000,
+  bylawContentMax: blueprint.entities.BylawRule.properties.content.maxLength ?? 5000,
+  auditSummaryMax: blueprint.entities.AuditTrailEntry.properties.summary.maxLength ?? 500,
 };
 
 export function clampStr(val: string, maxLen: number): string {
@@ -38,14 +41,16 @@ export function sanitizeMemberCode(raw: string): string {
     .toUpperCase()
     .replace(/[^A-Z0-9\-]/g, '')
     .slice(0, LIMITS.memberCodeMax);
-  return cleaned.length >= 3 ? cleaned : `AWY-${Date.now().toString().slice(-6)}`;
+  return cleaned.length >= 3 ? cleaned : `EDR-${Date.now().toString().slice(-6)}`;
 }
 
 export function formatETB(amount: number): string {
-  return new Intl.NumberFormat('en-ET', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount) + ' ETB';
+  return (
+    new Intl.NumberFormat('en-ET', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount) + ' ETB'
+  );
 }
 
 export function isSafeImageUrl(url?: string): boolean {
@@ -58,12 +63,6 @@ export function isSafeImageUrl(url?: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function emailToInviteId(email: string): string {
-  const normalized = email.trim().toLowerCase();
-  const safe = normalized.replace(/[^a-z0-9]/g, '_').slice(0, 100);
-  return `inv_${safe}`;
 }
 
 export async function compressImageFile(
@@ -136,7 +135,11 @@ export function downloadTextFile(filename: string, content: string, mimeType: st
   URL.revokeObjectURL(url);
 }
 
-export function exportRowsToCsv(filename: string, headers: string[], rows: (string | number | boolean)[][]): void {
+export function exportRowsToCsv(
+  filename: string,
+  headers: string[],
+  rows: (string | number | boolean)[][]
+): void {
   const escapeCell = (cell: string | number | boolean) => {
     const str = String(cell ?? '');
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
@@ -144,6 +147,8 @@ export function exportRowsToCsv(filename: string, headers: string[], rows: (stri
     }
     return str;
   };
-  const csv = '\uFEFF' + [headers.map(escapeCell).join(','), ...rows.map((r) => r.map(escapeCell).join(','))].join('\n');
+  const csv =
+    '\uFEFF' +
+    [headers.map(escapeCell).join(','), ...rows.map((r) => r.map(escapeCell).join(','))].join('\n');
   downloadTextFile(filename, csv, 'text/csv;charset=utf-8;');
 }

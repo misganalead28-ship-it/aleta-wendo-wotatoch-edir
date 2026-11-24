@@ -1,14 +1,39 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import appletConfig from '../firebase-applet-config.json';
+
+const firebaseConfig = {
+  ...appletConfig,
+  databaseURL: 'https://aleta-pt-default-rtdb.firebaseio.com',
+};
 
 const app = initializeApp(firebaseConfig);
 
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app, appletConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+export async function signInWithFirebaseGoogle(): Promise<User> {
+  const credential = await signInWithPopup(auth, googleProvider);
+  return credential.user;
+}
+
+export async function signOutFirebase(): Promise<void> {
+  await signOut(auth);
+}
+
+export function subscribeFirebaseAuth(callback: (user: User | null) => void): () => void {
+  return onAuthStateChanged(auth, callback);
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -1,4 +1,18 @@
-import { db as firestoreDb } from '../firebase';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  serverTimestamp,
+  writeBatch,
+  type Timestamp,
+} from 'firebase/firestore';
+import {
+  auth as firebaseAuth,
+  db as firestoreDb,
+  handleFirestoreError,
+  OperationType,
+} from '../firebase';
 import { getCurrentMonthKey, formatMonthLabelAm } from '../i18n';
 import type {
   AnnouncementNotice,
@@ -26,6 +40,7 @@ import type {
   UserAccount,
   UserRole,
 } from '../types';
+import { clampStr, LIMITS, sanitizeId, sanitizeMemberCode } from '../utils/validation';
 import { getAccountByCode } from './accountingEngine';
 
 export const ASSETS_IMG = {
@@ -43,8 +58,10 @@ export const INITIAL_ADMIN_PASSWORD =
 
 export interface IddirDataProvider {
   readonly driverName: 'localStorage' | 'firestore';
+  isCloudConnected(): boolean;
   load(): Promise<IddirDatabase>;
   save(data: IddirDatabase): Promise<void>;
+  syncFromCloud(fallbackLocal?: IddirDatabase): Promise<{ db: IddirDatabase; seededCloud: boolean }>;
   reset(): Promise<IddirDatabase>;
 }
 
@@ -719,57 +736,620 @@ export async function buildSeedDatabase(): Promise<IddirDatabase> {
   };
 }
 
-class LocalStorageIddirProvider implements IddirDataProvider {
-  readonly driverName = 'localStorage' as const;
+const COLLECTIONS = {
+  config: 'iddir_config',
+  members: 'iddir_members',
+  accounts: 'iddir_accounts',
+  contributions: 'iddir_contributions',
+  expenses: 'iddir_expenses',
+  journalEntries: 'iddir_journal_entries',
+  minutes: 'iddir_minutes',
+  letters: 'iddir_letters',
+  announcements: 'iddir_announcements',
+  inquiries: 'iddir_inquiries',
+  tasks: 'iddir_tasks',
+  bylaws: 'iddir_bylaws',
+  auditLogs: 'iddir_audit_logs',
+} as const;
 
-  async load(): Promise<IddirDatabase> {
+function stripUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+function timestampToIso(val: unknown, fallback?: string): string {
+  if (val && typeof val === 'object' && 'toDate' in val && typeof (val as Timestamp).toDate === 'function') {
+    return (val as Timestamp).toDate().toISOString();
+  }
+  if (typeof val === 'string' && val.length > 0) return val;
+  return fallback || new Date().toISOString();
+}
+
+function sanitizeMemberPayload(m: IddirMember) {
+  const safeId = sanitizeId(m.id);
+  const safePhone = clampStr(
+    m.phone && m.phone.trim().length >= 5 ? m.phone : '+251900000000',
+    LIMITS.phoneMax
+  );
+  const dependents = (m.dependents || []).slice(0, 25).map((d) => ({
+    id: sanitizeId(d.id),
+    fullName: clampStr(d.fullName || 'ተጠቃሚ', LIMITS.fullNameMax),
+    relationship: d.relationship,
+    age: Math.max(0, Number(d.age) || 0),
+  }));
+  return stripUndefined({
+    id: safeId,
+    memberCode: sanitizeMemberCode(m.memberCode),
+    fullName: clampStr(m.fullName && m.fullName.trim().length >= 2 ? m.fullName : 'አባል', LIMITS.fullNameMax),
+    phone: safePhone,
+    subCity: clampStr(m.subCity || 'አለታ ወንዶ', LIMITS.subCityMax),
+    kebele: clampStr(m.kebele || 'ቀበሌ 01', LIMITS.kebeleMax),
+    addressNote: m.addressNote ? clampStr(m.addressNote, LIMITS.addressMax) : undefined,
+    joinDate: clampStr(m.joinDate || new Date().toISOString().slice(0, 10), 32),
+    status: m.status === 'suspended' ? 'suspended' : 'active',
+    photoUrl: m.photoUrl ? clampStr(m.photoUrl, LIMITS.photoUrlMax) : undefined,
+    monthlyDuesRate: Math.max(0, Number(m.monthlyDuesRate) || 0),
+    guarantorName: m.guarantorName ? clampStr(m.guarantorName, LIMITS.guarantorMax) : undefined,
+    dependents,
+  });
+}
+
+function sanitizeAccountPayload(u: UserAccount) {
+  const safeId = sanitizeId(u.id);
+  const cleanUsername = u.username
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.\-]/g, '')
+    .slice(0, 60);
+  return stripUndefined({
+    id: safeId,
+    username: cleanUsername.length >= 3 ? cleanUsername : `user_${safeId.slice(-6)}`,
+    passwordSalt: clampStr(u.passwordSalt, 64),
+    passwordHash: clampStr(u.passwordHash, 128),
+    role: u.role,
+    memberId: u.memberId ? sanitizeId(u.memberId) : undefined,
+    displayName: clampStr(u.displayName && u.displayName.trim().length >= 2 ? u.displayName : 'ተጠቃሚ', LIMITS.fullNameMax),
+    active: Boolean(u.active),
+  });
+}
+
+function sanitizeContributionPayload(c: ContributionRecord) {
+  const safeId = sanitizeId(c.id);
+  const receiptNumber = clampStr(c.receiptNumber || 'RCP-000', 40);
+  return stripUndefined({
+    id: safeId,
+    receiptNumber,
+    memberId: sanitizeId(c.memberId),
+    memberCode: sanitizeMemberCode(c.memberCode),
+    memberName: clampStr(c.memberName && c.memberName.trim().length >= 2 ? c.memberName : 'አባል', LIMITS.fullNameMax),
+    monthKey: clampStr(c.monthKey || getCurrentMonthKey(), 10),
+    periodLabel: clampStr(c.periodLabel || c.monthKey || 'ወር', 64),
+    type: c.type,
+    amount: Math.max(1, Number(c.amount) || 1),
+    paymentMethod: c.paymentMethod,
+    bankName: c.bankName ? clampStr(c.bankName, 100) : undefined,
+    referenceCode: clampStr(c.referenceCode || receiptNumber, LIMITS.transactionRefMax),
+    receiptImageUrl: c.receiptImageUrl ? clampStr(c.receiptImageUrl, LIMITS.receiptUrlMax) : undefined,
+    notes: c.notes !== undefined ? clampStr(c.notes, LIMITS.notesMax) : undefined,
+    submittedByMember: c.submittedByMember !== undefined ? Boolean(c.submittedByMember) : undefined,
+    authorizationStatus: c.authorizationStatus || 'pending',
+    authorizedByUid: c.authorizedByUid ? clampStr(c.authorizedByUid, 128) : undefined,
+    authorizedByName: c.authorizedByName ? clampStr(c.authorizedByName, LIMITS.fullNameMax) : undefined,
+    authorizedAt: c.authorizedAt ? clampStr(c.authorizedAt, 64) : undefined,
+    rejectionReason: c.rejectionReason ? clampStr(c.rejectionReason, 300) : undefined,
+    recordedByUid: clampStr(c.recordedByUid || 'usr_admin', 128),
+    recordedByName: clampStr(c.recordedByName || 'አድሚን', LIMITS.fullNameMax),
+    recordedAt: clampStr(c.recordedAt || new Date().toISOString(), 64),
+  });
+}
+
+function sanitizeExpensePayload(e: ExpenseRecord) {
+  const safeId = sanitizeId(e.id);
+  return stripUndefined({
+    id: safeId,
+    voucherNumber: clampStr(e.voucherNumber || 'VCH-001', 40),
+    category: e.category,
+    title: clampStr(e.title && e.title.trim().length >= 2 ? e.title : 'ወጪ', LIMITS.expenseTitleMax),
+    description: clampStr(e.description || e.title || 'ዝርዝር ወጪ', LIMITS.expenseDescMax),
+    beneficiaryName: e.beneficiaryName ? clampStr(e.beneficiaryName, LIMITS.fullNameMax) : undefined,
+    amount: Math.max(1, Number(e.amount) || 1),
+    paymentMethod: e.paymentMethod,
+    referenceCode: e.referenceCode ? clampStr(e.referenceCode, LIMITS.transactionRefMax) : undefined,
+    approvalStatus: e.approvalStatus || 'pending',
+    approvedByName: e.approvedByName ? clampStr(e.approvedByName, LIMITS.fullNameMax) : undefined,
+    recordedByUid: clampStr(e.recordedByUid || 'usr_treas', 128),
+    recordedByName: clampStr(e.recordedByName || 'ገንዘብ ያዥ', LIMITS.fullNameMax),
+    expenseDate: clampStr(e.expenseDate || new Date().toISOString().slice(0, 10), 32),
+  });
+}
+
+function sanitizeJournalPayload(j: JournalEntry) {
+  const safeId = sanitizeId(j.id);
+  const lines = (j.lines || []).slice(0, 30).map((l) => ({
+    accountCode: clampStr(l.accountCode, 16),
+    accountNameAm: clampStr(l.accountNameAm, 120),
+    debit: Math.max(0, Number(l.debit) || 0),
+    credit: Math.max(0, Number(l.credit) || 0),
+  }));
+  return stripUndefined({
+    id: safeId,
+    entryNumber: clampStr(j.entryNumber || 'JRN-001', 40),
+    date: clampStr(j.date || new Date().toISOString().slice(0, 10), 32),
+    reference: clampStr(j.reference || j.entryNumber, LIMITS.transactionRefMax),
+    description: clampStr(j.description && j.description.trim().length >= 2 ? j.description : 'ጆርናል መዝገብ', 300),
+    sourceType: j.sourceType || 'manual',
+    sourceId: j.sourceId ? clampStr(j.sourceId, 128) : undefined,
+    lines,
+    createdByName: clampStr(j.createdByName || 'ገንዘብ ያዥ', LIMITS.fullNameMax),
+    authorizedByName: j.authorizedByName ? clampStr(j.authorizedByName, LIMITS.fullNameMax) : undefined,
+  });
+}
+
+function sanitizeMinutePayload(m: MeetingMinute) {
+  return stripUndefined({
+    id: sanitizeId(m.id),
+    meetingNumber: clampStr(m.meetingNumber || 'ቃለ-ጉባኤ', 60),
+    title: clampStr(m.title && m.title.trim().length >= 2 ? m.title : 'ስብሰባ', 200),
+    meetingDate: clampStr(m.meetingDate || new Date().toISOString().slice(0, 10), 32),
+    location: clampStr(m.location && m.location.trim().length >= 2 ? m.location : 'ጽሕፈት ቤት', 150),
+    attendeesCount: Math.max(0, Number(m.attendeesCount) || 0),
+    agenda: clampStr(m.agenda && m.agenda.trim().length >= 2 ? m.agenda : 'አጀንዳ', 2000),
+    minutesBody: clampStr(m.minutesBody && m.minutesBody.trim().length >= 2 ? m.minutesBody : 'ቃለ-ጉባኤ', LIMITS.minutesMax),
+    decisions: clampStr(m.decisions || '', 4000),
+    approvalStatus: m.approvalStatus || 'pending',
+    approvedByName: m.approvedByName ? clampStr(m.approvedByName, LIMITS.fullNameMax) : undefined,
+    recordedByUid: clampStr(m.recordedByUid || 'usr_sec', 128),
+    recordedByName: clampStr(m.recordedByName || 'ፀሐፊ', LIMITS.fullNameMax),
+  });
+}
+
+function sanitizeLetterPayload(l: OfficialLetter) {
+  return stripUndefined({
+    id: sanitizeId(l.id),
+    letterNumber: clampStr(l.letterNumber || 'ዕድር/001', 60),
+    recipient: clampStr(l.recipient && l.recipient.trim().length >= 2 ? l.recipient : 'ለሚመለከተው', 160),
+    subject: clampStr(l.subject && l.subject.trim().length >= 2 ? l.subject : 'ጉዳዩ', 200),
+    body: clampStr(l.body && l.body.trim().length >= 2 ? l.body : 'ደብዳቤ', 6000),
+    issueDate: clampStr(l.issueDate || new Date().toISOString().slice(0, 10), 32),
+    memberId: l.memberId ? sanitizeId(l.memberId) : undefined,
+    issuedByName: clampStr(l.issuedByName || 'ፀሐፊ', LIMITS.fullNameMax),
+  });
+}
+
+function sanitizeAnnouncementPayload(a: AnnouncementNotice) {
+  return stripUndefined({
+    id: sanitizeId(a.id),
+    category: a.category || 'general',
+    title: clampStr(a.title && a.title.trim().length >= 2 ? a.title : 'ማስታወቂያ', 200),
+    message: clampStr(a.message && a.message.trim().length >= 2 ? a.message : 'መልዕክት', LIMITS.announcementMax),
+    eventDate: a.eventDate ? clampStr(a.eventDate, 32) : undefined,
+    location: a.location ? clampStr(a.location, 150) : undefined,
+    approvalStatus: a.approvalStatus || 'approved',
+    authorUid: clampStr(a.authorUid || 'usr_pr', 128),
+    authorName: clampStr(a.authorName || 'ህዝብ ግንኙነት', LIMITS.fullNameMax),
+    authorRole: a.authorRole,
+  });
+}
+
+function sanitizeInquiryPayload(i: MemberInquiry) {
+  return stripUndefined({
+    id: sanitizeId(i.id),
+    memberId: sanitizeId(i.memberId),
+    memberName: clampStr(i.memberName && i.memberName.trim().length >= 2 ? i.memberName : 'አባል', LIMITS.fullNameMax),
+    memberCode: clampStr(i.memberCode && i.memberCode.trim().length >= 2 ? i.memberCode : 'EDR', 32),
+    subject: clampStr(i.subject && i.subject.trim().length >= 2 ? i.subject : 'ጥያቄ', 160),
+    message: clampStr(i.message && i.message.trim().length >= 2 ? i.message : 'መልዕክት', 2000),
+    responseText: i.responseText ? clampStr(i.responseText, 2000) : undefined,
+    respondedByName: i.respondedByName ? clampStr(i.respondedByName, LIMITS.fullNameMax) : undefined,
+    status: i.status === 'responded' ? 'responded' : 'open',
+  });
+}
+
+function sanitizeTaskPayload(t: CommitteeTask) {
+  return stripUndefined({
+    id: sanitizeId(t.id),
+    title: clampStr(t.title && t.title.trim().length >= 2 ? t.title : 'ተግባር', 200),
+    description: clampStr(t.description || '', 2000),
+    assignedRole: 'committee_member' as const,
+    assignedToName: clampStr(t.assignedToName && t.assignedToName.trim().length >= 2 ? t.assignedToName : 'የኮሚቴ አባል', LIMITS.fullNameMax),
+    dueDate: clampStr(t.dueDate || new Date().toISOString().slice(0, 10), 32),
+    status: t.status || 'todo',
+  });
+}
+
+function sanitizeBylawPayload(b: BylawRule) {
+  const rawContent = b.content.trim();
+  return stripUndefined({
+    id: sanitizeId(b.id),
+    articleNumber: clampStr(b.articleNumber && b.articleNumber.trim().length >= 2 ? b.articleNumber : 'አንቀጽ', 40),
+    title: clampStr(b.title && b.title.trim().length >= 2 ? b.title : 'ደንብ', 200),
+    content: clampStr(rawContent.length >= 5 ? rawContent : `${rawContent} (መተዳደሪያ ደንብ)`, LIMITS.bylawContentMax),
+  });
+}
+
+function sanitizeAuditPayload(a: AuditTrailEntry) {
+  return stripUndefined({
+    id: sanitizeId(a.id),
+    actorUid: clampStr(a.actorUid || 'usr_admin', 128),
+    actorUsername: clampStr(a.actorUsername || 'admin', 60),
+    actorName: clampStr(a.actorName && a.actorName.trim().length >= 2 ? a.actorName : 'አድሚን', LIMITS.fullNameMax),
+    actorRole: a.actorRole,
+    action: clampStr(a.action && a.action.trim().length >= 2 ? a.action : 'ተግባር', 120),
+    targetType: clampStr(a.targetType || 'ሲስተም', 60),
+    summary: clampStr(a.summary && a.summary.trim().length >= 2 ? a.summary : 'የሲስተም እንቅስቃሴ', LIMITS.auditSummaryMax),
+    timestamp: clampStr(a.timestamp || new Date().toISOString(), 64),
+  });
+}
+
+type BatchWriteOp =
+  | { kind: 'create'; col: string; id: string; data: Record<string, unknown> }
+  | { kind: 'update'; col: string; id: string; data: Record<string, unknown> }
+  | { kind: 'delete'; col: string; id: string };
+
+class FirestoreIddirProvider implements IddirDataProvider {
+  private lastCloudDb: IddirDatabase | null = null;
+  private cloudConfigExists = false;
+
+  get driverName(): 'localStorage' | 'firestore' {
+    return this.isCloudConnected() ? 'firestore' : 'localStorage';
+  }
+
+  isCloudConnected(): boolean {
+    return Boolean(firebaseAuth.currentUser && firebaseAuth.currentUser.emailVerified);
+  }
+
+  private readLocalCache(): IddirDatabase | null {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as IddirDatabase;
-        if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.contributions)) {
-          return {
-            ...parsed,
-            version: 3,
-            latePenaltyAmount: parsed.latePenaltyAmount || 50,
-            manualJournalEntries: Array.isArray(parsed.manualJournalEntries)
-              ? parsed.manualJournalEntries
-              : [],
-            contributions: parsed.contributions.map((c) => ({
-              ...c,
-              authorizationStatus: c.authorizationStatus || 'authorized',
-            })),
-          };
-        }
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as IddirDatabase;
+      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.contributions)) {
+        return {
+          ...parsed,
+          version: 3,
+          latePenaltyAmount: parsed.latePenaltyAmount || 50,
+          manualJournalEntries: Array.isArray(parsed.manualJournalEntries)
+            ? parsed.manualJournalEntries
+            : [],
+          contributions: parsed.contributions.map((c) => ({
+            ...c,
+            authorizationStatus: c.authorizationStatus || 'authorized',
+          })),
+        };
       }
     } catch {
-      // Fallback to clean seed
+      // Fallback
     }
+    return null;
+  }
+
+  private writeLocalCache(data: IddirDatabase): void {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  private async commitBatchOps(ops: BatchWriteOp[]): Promise<void> {
+    const CHUNK = 350;
+    for (let i = 0; i < ops.length; i += CHUNK) {
+      const slice = ops.slice(i, i + CHUNK);
+      const batch = writeBatch(firestoreDb);
+      for (const op of slice) {
+        const ref = doc(firestoreDb, op.col, op.id);
+        if (op.kind === 'create') {
+          batch.set(ref, {
+            ...op.data,
+            ...(op.col === COLLECTIONS.auditLogs
+              ? { createdAt: serverTimestamp() }
+              : { createdAt: serverTimestamp(), updatedAt: serverTimestamp() }),
+          });
+        } else if (op.kind === 'update') {
+          const { id: _ignoredId, ...fields } = op.data;
+          batch.update(ref, {
+            ...fields,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          batch.delete(ref);
+        }
+      }
+      try {
+        await batch.commit();
+      } catch (err) {
+        const first = slice[0];
+        handleFirestoreError(
+          err,
+          first?.kind === 'delete' ? OperationType.DELETE : OperationType.WRITE,
+          first ? `${first.col}/${first.id}` : 'batch'
+        );
+      }
+    }
+  }
+
+  private async fetchCollection<T>(colName: string): Promise<T[]> {
+    try {
+      const snap = await getDocs(collection(firestoreDb, colName));
+      return snap.docs.map((d) => d.data() as T);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, colName);
+    }
+  }
+
+  private async loadFromFirestore(): Promise<IddirDatabase | null> {
+    let configData: Record<string, unknown> | null = null;
+    try {
+      const configSnap = await getDoc(doc(firestoreDb, COLLECTIONS.config, 'main'));
+      if (!configSnap.exists()) {
+        this.cloudConfigExists = false;
+        return null;
+      }
+      this.cloudConfigExists = true;
+      configData = configSnap.data() as Record<string, unknown>;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `${COLLECTIONS.config}/main`);
+    }
+
+    const [
+      membersRaw,
+      accountsRaw,
+      contributionsRaw,
+      expensesRaw,
+      journalsRaw,
+      minutesRaw,
+      lettersRaw,
+      announcementsRaw,
+      inquiriesRaw,
+      tasksRaw,
+      bylawsRaw,
+      auditLogsRaw,
+    ] = await Promise.all([
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.members),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.accounts),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.contributions),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.expenses),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.journalEntries),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.minutes),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.letters),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.announcements),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.inquiries),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.tasks),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.bylaws),
+      this.fetchCollection<Record<string, unknown>>(COLLECTIONS.auditLogs),
+    ]);
+
+    const loaded: IddirDatabase = {
+      version: Number(configData?.version) || 3,
+      associationName: String(
+        configData?.associationName || 'የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር'
+      ),
+      monthlyDuesAmount: Number(configData?.monthlyDuesAmount) || 500,
+      latePenaltyAmount: Number(configData?.latePenaltyAmount) || 50,
+      members: membersRaw.map((m) => ({
+        ...(m as unknown as IddirMember),
+        dependents: Array.isArray(m.dependents) ? (m.dependents as DependentInfo[]) : [],
+        createdAt: timestampToIso(m.createdAt),
+        updatedAt: timestampToIso(m.updatedAt),
+      })),
+      users: accountsRaw.map((u) => ({
+        ...(u as unknown as UserAccount),
+        createdAt: timestampToIso(u.createdAt),
+        updatedAt: timestampToIso(u.updatedAt),
+      })),
+      contributions: contributionsRaw
+        .map((c) => ({
+          ...(c as unknown as ContributionRecord),
+          authorizationStatus:
+            (c.authorizationStatus as PaymentAuthorizationStatus) || 'authorized',
+        }))
+        .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt)),
+      expenses: expensesRaw
+        .map((e) => ({
+          ...(e as unknown as ExpenseRecord),
+          createdAt: timestampToIso(e.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      manualJournalEntries: journalsRaw
+        .map((j) => ({
+          ...(j as unknown as JournalEntry),
+          createdAt: timestampToIso(j.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      minutes: minutesRaw
+        .map((m) => ({
+          ...(m as unknown as MeetingMinute),
+          createdAt: timestampToIso(m.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      letters: lettersRaw
+        .map((l) => ({
+          ...(l as unknown as OfficialLetter),
+          createdAt: timestampToIso(l.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      announcements: announcementsRaw
+        .map((a) => ({
+          ...(a as unknown as AnnouncementNotice),
+          createdAt: timestampToIso(a.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      inquiries: inquiriesRaw
+        .map((i) => ({
+          ...(i as unknown as MemberInquiry),
+          createdAt: timestampToIso(i.createdAt),
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      tasks: tasksRaw
+        .map((t) => ({
+          ...(t as unknown as CommitteeTask),
+          updatedAt: timestampToIso(t.updatedAt),
+        }))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      bylaws: bylawsRaw.map((b) => ({
+        ...(b as unknown as BylawRule),
+        updatedAt: timestampToIso(b.updatedAt),
+      })),
+      auditLogs: auditLogsRaw
+        .map((a) => ({
+          ...(a as unknown as AuditTrailEntry),
+          timestamp: String(a.timestamp || timestampToIso(a.createdAt)),
+        }))
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    };
+
+    this.lastCloudDb = loaded;
+    this.writeLocalCache(loaded);
+    return loaded;
+  }
+
+  private diffCollection<T extends { id: string }>(
+    colName: string,
+    prevItems: T[],
+    nextItems: T[],
+    sanitizeFn: (item: T) => Record<string, unknown>,
+    allowUpdateAndDelete = true
+  ): BatchWriteOp[] {
+    const ops: BatchWriteOp[] = [];
+    const prevMap = new Map<string, { item: T; sig: string }>();
+    prevItems.forEach((item) => {
+      const sanitized = sanitizeFn(item);
+      prevMap.set(String(sanitized.id), { item, sig: JSON.stringify(sanitized) });
+    });
+
+    const nextIds = new Set<string>();
+    for (const nextItem of nextItems) {
+      const sanitized = sanitizeFn(nextItem);
+      const id = String(sanitized.id);
+      nextIds.add(id);
+      const prev = prevMap.get(id);
+      if (!prev) {
+        ops.push({ kind: 'create', col: colName, id, data: sanitized });
+      } else if (allowUpdateAndDelete && prev.sig !== JSON.stringify(sanitized)) {
+        ops.push({ kind: 'update', col: colName, id, data: sanitized });
+      }
+    }
+
+    if (allowUpdateAndDelete) {
+      for (const prevId of prevMap.keys()) {
+        if (!nextIds.has(prevId)) {
+          ops.push({ kind: 'delete', col: colName, id: prevId });
+        }
+      }
+    }
+    return ops;
+  }
+
+  private async pushDiffToFirestore(nextDb: IddirDatabase): Promise<void> {
+    const prevDb = this.lastCloudDb;
+    const ops: BatchWriteOp[] = [];
+
+    const configPayload = {
+      associationName: clampStr(nextDb.associationName, 160),
+      monthlyDuesAmount: Math.max(1, Number(nextDb.monthlyDuesAmount) || 500),
+      latePenaltyAmount: Math.max(0, Number(nextDb.latePenaltyAmount) || 50),
+      version: nextDb.version || 3,
+    };
+
+    if (!this.cloudConfigExists || !prevDb) {
+      ops.push({ kind: 'create', col: COLLECTIONS.config, id: 'main', data: configPayload });
+    } else if (
+      prevDb.associationName !== nextDb.associationName ||
+      prevDb.monthlyDuesAmount !== nextDb.monthlyDuesAmount ||
+      prevDb.latePenaltyAmount !== nextDb.latePenaltyAmount ||
+      prevDb.version !== nextDb.version
+    ) {
+      ops.push({ kind: 'update', col: COLLECTIONS.config, id: 'main', data: configPayload });
+    }
+
+    ops.push(
+      ...this.diffCollection(COLLECTIONS.members, prevDb?.members || [], nextDb.members, sanitizeMemberPayload),
+      ...this.diffCollection(COLLECTIONS.accounts, prevDb?.users || [], nextDb.users, sanitizeAccountPayload),
+      ...this.diffCollection(COLLECTIONS.contributions, prevDb?.contributions || [], nextDb.contributions, sanitizeContributionPayload),
+      ...this.diffCollection(COLLECTIONS.expenses, prevDb?.expenses || [], nextDb.expenses, sanitizeExpensePayload),
+      ...this.diffCollection(COLLECTIONS.journalEntries, prevDb?.manualJournalEntries || [], nextDb.manualJournalEntries, sanitizeJournalPayload),
+      ...this.diffCollection(COLLECTIONS.minutes, prevDb?.minutes || [], nextDb.minutes, sanitizeMinutePayload),
+      ...this.diffCollection(COLLECTIONS.letters, prevDb?.letters || [], nextDb.letters, sanitizeLetterPayload),
+      ...this.diffCollection(COLLECTIONS.announcements, prevDb?.announcements || [], nextDb.announcements, sanitizeAnnouncementPayload),
+      ...this.diffCollection(COLLECTIONS.inquiries, prevDb?.inquiries || [], nextDb.inquiries, sanitizeInquiryPayload),
+      ...this.diffCollection(COLLECTIONS.tasks, prevDb?.tasks || [], nextDb.tasks, sanitizeTaskPayload),
+      ...this.diffCollection(COLLECTIONS.bylaws, prevDb?.bylaws || [], nextDb.bylaws, sanitizeBylawPayload),
+      ...this.diffCollection(COLLECTIONS.auditLogs, prevDb?.auditLogs || [], nextDb.auditLogs, sanitizeAuditPayload, false)
+    );
+
+    if (ops.length > 0) {
+      await this.commitBatchOps(ops);
+      this.cloudConfigExists = true;
+    }
+    this.lastCloudDb = nextDb;
+  }
+
+  async syncFromCloud(
+    fallbackLocal?: IddirDatabase
+  ): Promise<{ db: IddirDatabase; seededCloud: boolean }> {
+    const cloudDb = await this.loadFromFirestore();
+    if (cloudDb) {
+      return { db: cloudDb, seededCloud: false };
+    }
+    const seedSource = fallbackLocal || this.readLocalCache() || (await buildSeedDatabase());
+    this.lastCloudDb = null;
+    await this.pushDiffToFirestore(seedSource);
+    this.writeLocalCache(seedSource);
+    return { db: seedSource, seededCloud: true };
+  }
+
+  async load(): Promise<IddirDatabase> {
+    const cached = this.readLocalCache();
+    if (this.isCloudConnected()) {
+      const { db } = await this.syncFromCloud(cached || undefined);
+      return db;
+    }
+    if (cached) return cached;
     const seeded = await buildSeedDatabase();
-    await this.save(seeded);
+    this.writeLocalCache(seeded);
     return seeded;
   }
 
   async save(data: IddirDatabase): Promise<void> {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    this.writeLocalCache(data);
+    if (this.isCloudConnected()) {
+      await this.pushDiffToFirestore(data);
+    }
   }
 
   async reset(): Promise<IddirDatabase> {
     const seeded = await buildSeedDatabase();
-    await this.save(seeded);
+    if (this.isCloudConnected() && this.lastCloudDb) {
+      const resetWithExistingAudits: IddirDatabase = {
+        ...seeded,
+        auditLogs: [
+          {
+            id: generateId('aud'),
+            actorUid: 'usr_admin',
+            actorUsername: INITIAL_ADMIN_USERNAME,
+            actorName: 'የሲስተም አድሚን',
+            actorRole: 'admin' as const,
+            action: 'መረጃ ወደ መነሻ ተመልሷል',
+            targetType: 'ሲስተም',
+            summary: 'የዕድሩ መረጃ ወደ መጀመሪያው የሙከራ መረጃ ተመልሷል።',
+            timestamp: new Date().toISOString(),
+          },
+          ...this.lastCloudDb.auditLogs,
+        ].slice(0, 400),
+      };
+      this.writeLocalCache(resetWithExistingAudits);
+      await this.pushDiffToFirestore(resetWithExistingAudits);
+      return resetWithExistingAudits;
+    }
+    this.writeLocalCache(seeded);
     return seeded;
   }
 }
 
-/**
- * Cloud-ready provider placeholder referencing the configured Firebase Firestore instance (`firestoreDb`).
- * Swap active provider when moving from offline-first localStorage mode to cloud sync.
- */
 export function getConfiguredFirestoreRef() {
   return firestoreDb;
 }
 
-export const iddirProvider: IddirDataProvider = new LocalStorageIddirProvider();
+export const iddirProvider: IddirDataProvider = new FirestoreIddirProvider();
 
 function assertRole(session: AuthSession, allowed: UserRole[], actionLabel: string): void {
   if (!allowed.includes(session.role)) {

@@ -1,24 +1,23 @@
-# Security Specification — Aleta Wendo Youth Mutual Aid Association (የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር)
+# Security Specification — የአለታ ወንዶ ወጣቶች በሁሉ ቦታ መረዳጃ ዕድር (Iddir Management System)
 
 ## 1. Data Invariants
-1. **Identity & Privilege Invariant**: A regular member cannot create or update their own `members/{uid}` document with an elevated role (`chairperson`, `secretary`, `treasurer`, `auditor`) or modify `status`/`monthlyDuesRate`. Only the bootstrapped Chairperson/Admin (`Misganalead28@gmail.com` with `email_verified == true`) can assign roles or change member status.
-2. **PII Isolation Invariant**: Documents in `/members/{memberId}` containing `email`, `phone`, and `address` can only be read by the document owner (`uid == request.auth.uid`), verified officers (on single-doc `get`), or the bootstrapped Admin. Public directory entries in `/members_public/{memberId}` exclude all PII (`email`, `phone`, `address`, `guarantorPhone`).
-3. **Receipt & Financial Authorization Invariant**: A member creating a contribution in `/contributions/{contributionId}` MUST set `memberUid == request.auth.uid`, `status == 'pending'`, and `reconciled == false`. Members cannot self-approve their own payments or mark them reconciled; only verified Treasurers/Chairpersons/Admins can transition `status` from `pending` to `approved`/`rejected` or update `reconciled`. Once `status == 'approved'`, a contribution is terminally locked against non-admin edits.
-4. **Master Gate & Dependent Integrity**: A dependent in `/members/{memberId}/dependents/{dependentId}` can only exist when the parent `/members/{memberId}` document exists, and `dependent.uid == memberId`.
-5. **One-Member-One-Vote Invariant**: A ballot in `/polls/{pollId}/votes/{uid}` requires the parent `/polls/{pollId}` to exist with `status == 'open'`, `voteId == request.auth.uid`, `uid == request.auth.uid`, and forbids updates or deletes after submission.
-6. **Temporal & Volumetric Integrity**: All `createdAt` and `updatedAt` fields must equal `request.time`; `createdAt` and ownership fields (`uid`, `memberUid`, `actorUid`) are immutable after creation; all strings enforce `.size()` limits and all path IDs match `^[a-zA-Z0-9_\-]+$`.
-7. **Audit Trail Immutability**: Documents in `/audit_logs/{logId}` are append-only (`update` and `delete` always denied) and `actorUid` must equal `request.auth.uid`.
+1. **Default-Deny Catch-All & Strict ID Validation**: All undefined paths are rejected by `match /{document=**} { allow read, write: if false; }`. Every document ID across all 13 collections must match `^[a-zA-Z0-9_\-]+$` with length 1..128.
+2. **Verified Bootstrapped Admin Boundary**: Only a verified Firebase Auth session (`request.auth != null && request.auth.token.firebase.sign_in_provider != 'anonymous' && request.auth.token.email_verified == true`) matching the association admin email (`Misganalead28@gmail.com`) is authorized to synchronize and persist Iddir database collections in Firestore.
+3. **Credential & PII Isolation**: `iddir_accounts` (containing `passwordSalt`, `passwordHash`, and RBAC roles) and `iddir_members` (containing `phone`, `subCity`, `kebele`, `addressNote`, `guarantorName`) are strictly restricted to the verified Admin; unauthenticated or non-admin reads and list scraping are denied.
+4. **Strict Schema & Volumetric Enforcements**: Every collection validates required keys with `data.keys().hasAll(...)` and blocks ghost/shadow keys with `data.keys().hasOnly(...)` synchronized verbatim with `firebase-blueprint.json` (including `maxLength` bounds on strings and size caps on `dependents` and `lines` arrays).
+5. **Temporal & Immutability Integrity**: On document creation, `createdAt == request.time` and `updatedAt == request.time` are enforced; on updates, `id` and `createdAt` are immutable and `updatedAt == request.time` is required.
+6. **Append-Only Audit Trail**: Documents in `iddir_audit_logs` allow `create` only with valid schema and `createdAt == request.time`, and strictly forbid `update` and `delete`.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
-1. **Role Self-Escalation on Create**: Member signs up at `/members/{uid}` with `role: "treasurer"` instead of `"member"`. -> Must return `PERMISSION_DENIED`.
-2. **Role Self-Escalation on Update**: Member updates own `/members/{uid}` with `role: "chairperson"`. -> Must return `PERMISSION_DENIED`.
-3. **Shadow Ghost Field Injection**: User creates a contribution with an undeclared field `isSuperApproved: true`. -> Must return `PERMISSION_DENIED`.
-4. **Self-Approval Payment Bypass**: Member creates `/contributions/{id}` with `status: "approved"` directly. -> Must return `PERMISSION_DENIED`.
-5. **Cross-Member Impersonation**: User A creates `/contributions/{id}` with `memberUid: "userB"`. -> Must return `PERMISSION_DENIED`.
-6. **Unverified Email Spoofing**: Request with `email: "Misganalead28@gmail.com"` and `email_verified: false`. -> Must return `PERMISSION_DENIED`.
-7. **PII Cross-Read Attack**: Non-officer User A reads `/members/userB` to harvest phone/address. -> Must return `PERMISSION_DENIED`.
-8. **Blanket List Query Scraping**: User A runs `getDocs(collection(db, "contributions"))` without filtering by `memberUid`. -> Must return `PERMISSION_DENIED`.
-9. **Terminal State Tampering**: Non-admin edits an already `approved` contribution's `amount`. -> Must return `PERMISSION_DENIED`.
-10. **Closed Poll / Double Vote Injection**: User votes in `/polls/{pollId}/votes/otherUserUid` or on a `closed` poll. -> Must return `PERMISSION_DENIED`.
-11. **ID Poisoning / Resource Exhaustion**: User writes to `/contributions/` with a 1500-char document ID or a 600KB `notes` field. -> Must return `PERMISSION_DENIED`.
-12. **Audit Log Tampering**: User attempts to `update` or `delete` an entry in `/audit_logs/{logId}`. -> Must return `PERMISSION_DENIED`.
+1. **Unauthenticated Collection Read**: Request without `request.auth` reads `iddir_members` or `iddir_accounts`. -> Must return `PERMISSION_DENIED`.
+2. **Unverified Email Spoofing**: Request with `email: "Misganalead28@gmail.com"` and `email_verified: false` writes to `iddir_config/main`. -> Must return `PERMISSION_DENIED`.
+3. **Non-Admin Credential Scraping**: Signed-in non-admin user attempts `list` on `iddir_accounts`. -> Must return `PERMISSION_DENIED`.
+4. **Shadow Ghost Field Injection**: Write to `iddir_contributions/{id}` includes undeclared key `bypassApproval: true`. -> Must return `PERMISSION_DENIED`.
+5. **Oversized String / Resource Exhaustion**: Write to `iddir_members/{id}` with 200KB `fullName` or 600KB `photoUrl`. -> Must return `PERMISSION_DENIED`.
+6. **Invalid Role Escalation**: Write to `iddir_accounts/{id}` with `role: "super_root"`. -> Must return `PERMISSION_DENIED`.
+7. **Timestamp Forgery on Create**: Write to `iddir_expenses/{id}` passes arbitrary client timestamp instead of `request.time`. -> Must return `PERMISSION_DENIED`.
+8. **Immutable Field Mutation**: Update to `iddir_contributions/{id}` attempts to mutate `id` or `createdAt`. -> Must return `PERMISSION_DENIED`.
+9. **Audit Trail Tampering**: Request attempts `update` or `delete` on `iddir_audit_logs/{logId}`. -> Must return `PERMISSION_DENIED`.
+10. **Negative Monetary Value Injection**: Write to `iddir_contributions/{id}` sets `amount: -500`. -> Must return `PERMISSION_DENIED`.
+11. **Unbounded Dependents Array Injection**: Write to `iddir_members/{id}` supplies more than 25 dependents or invalid element type. -> Must return `PERMISSION_DENIED`.
+12. **Path Traversal / Poisoned Document ID**: Write to `iddir_bylaws/bad..id$!` with disallowed characters. -> Must return `PERMISSION_DENIED`.
